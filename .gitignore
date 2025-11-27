@@ -1,0 +1,17 @@
+# Ignore dataset files
+*.csv
+*.npy
+*.pkl
+*.txt
+
+# Ignore processed data
+processed_data/
+CICIDS2018-CSV/
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore other temporary files
+*.tmp
+*.log
+*.bak
