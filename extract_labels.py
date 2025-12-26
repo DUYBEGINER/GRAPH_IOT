@@ -69,7 +69,7 @@ def main():
     """Hàm chính để chạy script"""
     
     # Đường dẫn đến thư mục chứa các tệp CSV
-    csv_directory = r"D:\PROJECT\Machine Learning\IOT\processed_data"
+    csv_directory = r"D:\PROJECT\Machine Learning\IOT\CICIDS2018-CSV"
     
     print("=" * 80)
     print("TRÍCH XUẤT NHÃN TỪ CÁC TẾP CSV CICIDS2018")

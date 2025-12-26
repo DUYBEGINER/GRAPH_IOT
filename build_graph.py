@@ -21,7 +21,7 @@ GRAPH_DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\graph_data"
 # Graph construction parameters
 K_NEIGHBORS = 10  # Số lượng neighbors cho KNN graph
 SIMILARITY_THRESHOLD = 0.5  # Ngưỡng similarity để tạo edge
-GRAPH_TYPE = 'knn'  # 'knn' hoặc 'similarity'
+GRAPH_TYPE = 'similar'  # 'knn' hoặc 'similarity'
 
 # ============================================================================
 # GRAPH CONSTRUCTION CLASS
@@ -59,22 +59,32 @@ class NetworkTrafficGraphBuilder:
                 include_self=False
             )
         else:
-            # Xử lý theo batch nếu dữ liệu lớn
+            # Xử lý theo batch nếu dữ liệu lớn - tạo edge list thay vì adjacency matrix
             print(f"  Dữ liệu lớn, xử lý theo batch ({batch_size} samples/batch)...")
-            from scipy.sparse import lil_matrix
-            adjacency = lil_matrix((n_samples, n_samples))
+            edges = []
 
             for i in tqdm(range(0, n_samples, batch_size), desc="  Building KNN graph"):
                 end_idx = min(i + batch_size, n_samples)
-                batch_adj = kneighbors_graph(
-                    X[i:end_idx],
-                    n_neighbors=min(self.k_neighbors, end_idx - i),
-                    mode='connectivity',
-                    include_self=False
-                )
-                adjacency[i:end_idx] = batch_adj
+                batch_X = X[i:end_idx]
 
-        # Chuyển sang edge_index format
+                # Tìm k nearest neighbors trong toàn bộ dataset
+                from sklearn.neighbors import NearestNeighbors
+                nbrs = NearestNeighbors(n_neighbors=self.k_neighbors + 1, algorithm='auto').fit(X)
+                distances, indices = nbrs.kneighbors(batch_X)
+
+                # Tạo edges (bỏ qua neighbor đầu tiên vì đó là chính nó)
+                for local_idx in range(len(batch_X)):
+                    global_idx = i + local_idx
+                    for neighbor_idx in indices[local_idx][1:]:  # Skip first (itself)
+                        edges.append([global_idx, neighbor_idx])
+
+            # Chuyển edge list sang COO format
+            edges = np.array(edges).T
+            edge_index = torch.tensor(edges, dtype=torch.long)
+            print(f"✓ Graph created: {n_samples} nodes, {edge_index.shape[1]} edges")
+            return edge_index
+
+        # Chuyển sang edge_index format (cho trường hợp không batch)
         adjacency = adjacency.tocoo()
         edge_index = torch.tensor(
             np.vstack([adjacency.row, adjacency.col]),
@@ -215,7 +225,7 @@ def build_graph_dataset():
     print(f"✓ Multi classes: {len(np.unique(y_multi))}")
 
     # Giảm kích thước nếu quá lớn (optional - để training nhanh hơn)
-    MAX_SAMPLES = 50000  # Giới hạn số samples để training nhanh
+    MAX_SAMPLES = 200000  # Giới hạn số samples để training nhanh
     if X.shape[0] > MAX_SAMPLES:
         print(f"\n⚠ Dataset lớn ({X.shape[0]:,} samples), sampling {MAX_SAMPLES:,} samples...")
         indices = np.random.choice(X.shape[0], MAX_SAMPLES, replace=False)

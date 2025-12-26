@@ -3,7 +3,7 @@
 *.npy
 *.pkl
 *.txt
-
+*.zip
 # Ignore processed data
 processed_data/
 CICIDS2018-CSV/

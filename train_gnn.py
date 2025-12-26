@@ -38,7 +38,7 @@ DROPOUT = 0.3
 # Training configuration
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 5e-4
-NUM_EPOCHS = 100
+NUM_EPOCHS = 5
 PATIENCE = 15  # Early stopping patience
 TASK = 'binary'  # 'binary' hoặc 'multi'
 
@@ -49,7 +49,7 @@ TEST_RATIO = 0.15
 
 # Device
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+print('cuda' if torch.cuda.is_available() else 'cpu')
 # ============================================================================
 # TRAINING CLASS
 # ============================================================================
@@ -245,7 +245,7 @@ class GNNTrainer:
 
     def load_model(self, path):
         """Load model checkpoint"""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.best_val_acc = checkpoint['best_val_acc']
         self.best_epoch = checkpoint['best_epoch']
@@ -329,7 +329,7 @@ def main():
     # Load graph data
     print("Loading graph data...")
     graph_file = f"graph_{TASK}.pt"
-    data = torch.load(os.path.join(GRAPH_DATA_DIR, graph_file))
+    data = torch.load(os.path.join(GRAPH_DATA_DIR, graph_file), weights_only=False)
     data = data.to(DEVICE)
 
     print(f"✓ Graph loaded: {data.num_nodes:,} nodes, {data.num_edges:,} edges")
