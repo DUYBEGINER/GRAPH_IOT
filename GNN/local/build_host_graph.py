@@ -21,9 +21,9 @@ import ipaddress
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\CICIDS2018-CSV"
+DATA_DIR = r"/CICIDS2018-CSV"
 GRAPH_DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\graph_data_host"
-PROCESSED_DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\processed_data"
+PROCESSED_DATA_DIR = r"/processed_data"
 
 # Chọn file có IP information
 CSV_FILE = "Thuesday-20-02-2018_TrafficForML_CICFlowMeter.csv"

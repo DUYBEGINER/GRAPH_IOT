@@ -15,7 +15,7 @@ from tqdm import tqdm
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-PROCESSED_DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\processed_data"
+PROCESSED_DATA_DIR = r"/processed_data"
 GRAPH_DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\graph_data"
 
 # Graph construction parameters
