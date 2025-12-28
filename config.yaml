@@ -1,0 +1,121 @@
+# Project Settings
+project:
+  name: "GNN-IDS"
+  seed: 42
+  device: "auto"  # auto, cuda, mps, cpu
+
+# Data Configuration
+data:
+  csv_path: "data/Tuesday_20_02_exist_ip.csv"
+  label_col: "Label"
+  
+  # Column mapping for endpoint-based approach
+  src_ip_col: "Src IP"
+  src_port_col: "Src Port"
+  dst_ip_col: "Dst IP"
+  dst_port_col: "Dst Port"
+  
+  # Columns to drop (non-numeric/irrelevant)
+  drop_cols:
+    - "Flow ID"
+    - "Timestamp"
+    - "Src IP"
+    - "Dst IP"
+    - "Src Port"
+    - "Dst Port"
+  
+  max_samples: 2000000  # Limit for memory
+  test_split: 0.3
+  val_split: 0.1
+
+# Graph Mode Selection
+mode: "endpoint"  # "flow" (KNN) or "endpoint" (E-GraphSAGE)
+
+# Flow-based Graph (node=flow, edge=KNN)
+flow_graph:
+  k_neighbors: 10
+  metric: "cosine"  # cosine, euclidean, manhattan
+
+# Endpoint-based Graph (node=endpoint, edge=flow)
+endpoint_graph:
+  mapping_mode: "ip_port"  # ip_port or ip_only
+  
+  anti_leakage:
+    enabled: true  # Enable IP random mapping
+    map_scope: "all_ips"  # all_ips or src_ip_only
+
+# Preprocessing
+preprocessing:
+  scale: "standard"  # standard or minmax
+  handle_inf: "zero"  # zero or median
+
+# Task Configuration
+task:
+  type: "binary"  # binary or multiclass
+  num_classes: 2
+
+# Model: Flow-based GraphSAGE (node classification)
+flow_model:
+  type: "GraphSAGE"
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.3
+  aggregator: "mean"
+
+# Model: E-GraphSAGE (edge classification)
+endpoint_model:
+  type: "E-GraphSAGE"
+  hidden_dim: 128
+  num_layers: 2  # K=2 as per paper
+  dropout: 0.2
+  aggregator: "mean"
+  activation: "relu"
+  
+# Training Configuration
+training:
+  epochs: 50
+  batch_size: 4096  # For LinkNeighborLoader
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  
+  # Neighbor sampling
+  num_neighbors: [15, 10]  # 2-hop sampling
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.0001
+    metric: "f1"  # f1, accuracy, loss
+  
+  # Loss function
+  loss:
+    type: "cross_entropy"  # cross_entropy or bce_with_logits
+    use_class_weights: true
+    use_pos_weight: false  # For BCEWithLogitsLoss
+
+# Evaluation
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1"
+    - "far"  # False Alarm Rate
+    - "confusion_matrix"
+  
+  save_predictions: true
+
+# Output Configuration
+output:
+  dir: "src/output"
+  checkpoint_dir: "src/output/checkpoints"
+  log_dir: "src/output/logs"
+  save_best_model: true
+  model_name: "best_model.pth"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
