@@ -1,0 +1,50 @@
+# Endpoint-based GNN Configuration
+# Node = endpoint (IP/IP:Port), Edge = flow, Task = edge classification
+
+project:
+  name: "Endpoint-GNN"
+  seed: 42
+  device: "auto"  # auto, cuda, mps, cpu
+
+data:
+  src_ip_col: "Src IP"
+  src_port_col: "Src Port"
+  dst_ip_col: "Dst IP"
+  dst_port_col: "Dst Port"
+  label_col: "Label"
+  
+  # Columns to drop (non-numeric/irrelevant)
+  drop_cols:
+    - "Flow ID"
+    - "Timestamp"
+    - "Src IP"
+    - "Dst IP"
+    - "Src Port"
+    - "Dst Port"
+
+model:
+  hidden_dim: 128
+  num_classes: 2
+  num_layers: 2
+  dropout: 0.2
+  aggr: "mean"  # mean or sum
+
+graph:
+  mapping_mode: "ip_port"  # ip_port or ip_only
+  
+  anti_leakage:
+    enabled: true  # Enable IP random mapping
+    map_scope: "all_ips"  # all_ips or src_ip_only
+
+training:
+  epochs: 100
+  batch_size: 1024
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_neighbors: [10, 5]  # Sampling for each layer
+  patience: 10
+  min_delta: 0.001
+  test_split: 0.3
+  val_split: 0.1
+
+output_dir: "output/endpoint_gnn"

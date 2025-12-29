@@ -1,0 +1,58 @@
+# Preprocessing Configuration for CICIDS Dataset
+
+# Mode selection: flow_gnn | ip_gnn | cnn_lstm
+mode: flow_gnn
+
+# Data paths
+paths:
+  # For flow_gnn: use all files in dataset-raw
+  input_dir_flow: "dataset-raw"
+  
+  # For ip_gnn: use only the file with IP columns
+  input_file_ip: "dataset-raw/Thuesday-20-02-2018_TrafficForML_CICFlowMeter.csv"
+  
+  output_dir: "dataset-processed"
+
+# Chunk processing for large files
+chunk_processing:
+  chunk_size: 100000  # Number of rows per chunk
+
+# Data cleaning parameters
+cleaning:
+  missing_threshold: 0.5  # Drop rows with >50% missing values
+  impute_strategy: median  # median | mean | zero
+  clip_quantiles: [0.01, 0.99]  # Clip outliers (null to disable)
+  
+  # Common columns to drop (metadata, redundant)
+  drop_cols_common:
+    - Flow_ID
+    - Src_Port
+    - Dst_Port
+    - Timestamp
+  
+  # Columns to keep for IP mode (in addition to features)
+  keep_cols_ip_mode:
+    - Src_IP
+    - Dst_IP
+    - Timestamp
+
+# Train/val/test split configuration
+split:
+  split_mode: random  # random | time (chronological)
+  val_ratio: 0.1
+  test_ratio: 0.3
+  seed: 42
+
+# Graph building parameters (for GNN modes)
+graph:
+  knn_k: 5  # Number of neighbors for flow_gnn
+  knn_metric: cosine  # cosine | euclidean
+  
+  # IP aggregation features for ip_gnn
+  ip_agg_features:
+    - mean
+    - std
+    - sum
+    - max
+    - min
+

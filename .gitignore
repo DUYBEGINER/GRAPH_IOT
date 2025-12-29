@@ -109,3 +109,6 @@ __pycache__/
 *.tmp
 *.log
 *.bak
+
+/dataset-raw/
+/dataset-processed/

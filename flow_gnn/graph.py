@@ -1,4 +1,4 @@
-"""Graph construction utilities using KNN."""
+"""Build KNN graph from features."""
 
 import logging
 import torch
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def build_knn_graph(
     X_scaled: np.ndarray, 
-    k: int, 
+    k: int = 10, 
     metric: str = "cosine"
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -25,10 +25,6 @@ def build_knn_graph(
     Returns:
         edge_index: Edge indices [2, num_edges]
         edge_weight: Edge weights [num_edges] (similarity scores)
-        
-    Note:
-        - Graph is made undirected by symmetrization
-        - Edge weights are similarities (1 - distance) for cosine metric
     """
     try:
         logger.info(f"Building KNN graph with k={k}, metric={metric}...")
@@ -53,20 +49,15 @@ def build_knn_graph(
         # Convert distance to similarity
         dist = np.array(adj[row, col]).flatten()
         if metric == "cosine":
-            # Cosine distance in [0, 2], convert to similarity
             edge_weight = torch.tensor(1.0 - dist, dtype=torch.float)
         else:
-            # For other metrics, use inverse distance as weight
-            # Add small epsilon to avoid division by zero
             edge_weight = torch.tensor(1.0 / (dist + 1e-8), dtype=torch.float)
         
         num_nodes = X_scaled.shape[0]
         num_edges = edge_index.shape[1]
         avg_degree = num_edges / num_nodes
         
-        logger.info(f"Graph constructed: {num_nodes} nodes, {num_edges} edges")
-        logger.info(f"Average node degree: {avg_degree:.2f}")
-        logger.info(f"Edge weight range: [{edge_weight.min():.4f}, {edge_weight.max():.4f}]")
+        logger.info(f"Graph: {num_nodes} nodes, {num_edges} edges, avg degree: {avg_degree:.2f}")
         
         return edge_index, edge_weight
         
