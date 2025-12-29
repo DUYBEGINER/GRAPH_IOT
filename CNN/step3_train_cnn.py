@@ -1,24 +1,5 @@
 """
-======================================================================================
-BƯỚC 3: TRAIN MÔ HÌNH CNN CHO PHÁT HIỆN LƯU LƯỢNG MẠNG IOT BẤT THƯỜNG
-======================================================================================
-
-Kiến trúc CNN theo yêu cầu:
-- Input Layer: Shape (num_features, 1)
-- Conv1D (32 filters, kernel 2) -> MaxPooling1D (2)
-- Conv1D (32 filters, kernel 2) -> MaxPooling1D (2)
-- Conv1D (64 filters, kernel 2) -> MaxPooling1D (2)
-- Conv1D (64 filters, kernel 2) -> MaxPooling1D (2)
-- Conv1D (64 filters, kernel 2) -> MaxPooling1D (2)
-- BatchNormalization + Dropout (0.5)
-- Flatten
-- Dense(1, activation='sigmoid')
-
-Loss: binary_crossentropy
-Optimizer: Adam
-Metrics: Accuracy, Precision, Recall
-
-Có thể chạy trên cả Kaggle và Local
+BƯỚC 3: TRAIN CNN CHO PHÁT HIỆN LƯU LƯỢNG MẠNG IOT BẤT THƯỜNG
 """
 
 import os
@@ -30,71 +11,45 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============================================================================
-# TENSORFLOW/KERAS
-# ============================================================================
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import (
-    Conv1D, MaxPooling1D, Flatten, Dense,
-    Dropout, BatchNormalization, Input
-)
-from tensorflow.keras.callbacks import (
-    EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoard
-)
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, BatchNormalization, Input
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoard
 from tensorflow.keras.metrics import Precision, Recall
 
 # Kiểm tra GPU
-print("="*80)
-print("🖥️ THÔNG TIN HỆ THỐNG")
-print("="*80)
-print(f"TensorFlow version: {tf.__version__}")
+print(f"TensorFlow {tf.__version__}")
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
-    print(f"✅ GPU available: {len(gpus)} GPU(s)")
-    for gpu in gpus:
-        print(f"   - {gpu}")
-    # Cấu hình GPU memory growth để tránh chiếm hết bộ nhớ
+    print(f"✅ {len(gpus)} GPU(s)")
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 else:
-    print("⚠️ Không có GPU, sẽ sử dụng CPU")
+    print("⚠️ CPU mode")
 
-# Kiểm tra môi trường chạy
 IS_KAGGLE = os.path.exists('/kaggle/input')
 
-# ============================================================================
-# CẤU HÌNH ĐƯỜNG DẪN
-# ============================================================================
+# Cấu hình đường dẫn
 if IS_KAGGLE:
     TRAINING_DATA_DIR = "/kaggle/working/training_data"
     MODEL_DIR = "/kaggle/working/models"
     LOG_DIR = "/kaggle/working/logs"
-    print("🌐 Đang chạy trên KAGGLE")
+    print("🌐 Kaggle")
 else:
     TRAINING_DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\CNN\training_data"
     MODEL_DIR = r"D:\PROJECT\Machine Learning\IOT\CNN\models"
     LOG_DIR = r"D:\PROJECT\Machine Learning\IOT\CNN\logs"
-    print("💻 Đang chạy trên LOCAL")
-
-# ============================================================================
-# CẤU HÌNH HUẤN LUYỆN
-# ============================================================================
+    print("💻 Local")
 
 # Hyperparameters
-BATCH_SIZE = 256        # Batch size cho training
-EPOCHS = 50             # Số epochs tối đa
-LEARNING_RATE = 0.001   # Learning rate ban đầu
-
-# Regularization
-DROPOUT_RATE = 0.5      # Dropout rate trước Flatten
-
-# Early stopping
-PATIENCE = 10           # Số epochs chờ trước khi dừng
-
-# Random seed
+BATCH_SIZE = 256
+EPOCHS = 50
+LEARNING_RATE = 0.001
+DROPOUT_RATE = 0.5
+PATIENCE = 10
 RANDOM_SEED = 42
+
 np.random.seed(RANDOM_SEED)
 tf.random.set_seed(RANDOM_SEED)
 
@@ -107,7 +62,7 @@ def build_cnn_model(input_shape):
     """
     Xây dựng mô hình CNN cho phân loại binary
 
-    Kiến trúc theo yêu cầu:
+    Kiến trúc:
     - 5 lớp Conv1D với MaxPooling
     - BatchNormalization và Dropout trước Flatten
     - Output layer với sigmoid activation
@@ -139,75 +94,34 @@ def build_cnn_model(input_shape):
     ))
     model.add(MaxPooling1D(pool_size=2, name='maxpool_1'))
 
-    # ========== KHỐI CONV 2 ==========
-    # Conv1D (32 filters, kernel 2x1) -> MaxPooling1D (2)
-    model.add(Conv1D(
-        filters=32,
-        kernel_size=2,
-        activation='relu',
-        padding='same',
-        name='conv1d_2'
-    ))
-    model.add(MaxPooling1D(pool_size=2, name='maxpool_2'))
+    # Conv blocks
+    model.add(Conv1D(32, 2, activation='relu', padding='same', name='conv1d_2'))
+    model.add(MaxPooling1D(2, name='maxpool_2'))
 
-    # ========== KHỐI CONV 3 ==========
-    # Conv1D (64 filters, kernel 2x1) -> MaxPooling1D (2)
-    model.add(Conv1D(
-        filters=64,
-        kernel_size=2,
-        activation='relu',
-        padding='same',
-        name='conv1d_3'
-    ))
-    model.add(MaxPooling1D(pool_size=2, name='maxpool_3'))
+    model.add(Conv1D(64, 2, activation='relu', padding='same', name='conv1d_3'))
+    model.add(MaxPooling1D(2, name='maxpool_3'))
 
-    # ========== KHỐI CONV 4 ==========
-    # Conv1D (64 filters, kernel 2x1) -> MaxPooling1D (2)
-    model.add(Conv1D(
-        filters=64,
-        kernel_size=2,
-        activation='relu',
-        padding='same',
-        name='conv1d_4'
-    ))
-    model.add(MaxPooling1D(pool_size=2, name='maxpool_4'))
+    model.add(Conv1D(64, 2, activation='relu', padding='same', name='conv1d_4'))
+    model.add(MaxPooling1D(2, name='maxpool_4'))
 
-    # ========== KHỐI CONV 5 ==========
-    # Conv1D (64 filters, kernel 2x1) -> MaxPooling1D (2)
-    model.add(Conv1D(
-        filters=64,
-        kernel_size=2,
-        activation='relu',
-        padding='same',
-        name='conv1d_5'
-    ))
-    model.add(MaxPooling1D(pool_size=2, name='maxpool_5'))
+    model.add(Conv1D(64, 2, activation='relu', padding='same', name='conv1d_5'))
+    model.add(MaxPooling1D(2, name='maxpool_5'))
 
-    # ========== REGULARIZATION ==========
-    # BatchNormalization và Dropout trước Flatten
+    # Regularization
     model.add(BatchNormalization(name='batch_norm'))
     model.add(Dropout(DROPOUT_RATE, name='dropout'))
 
-    # ========== FLATTEN ==========
+    # Output
     model.add(Flatten(name='flatten'))
-
-    # ========== OUTPUT LAYER ==========
-    # Dense(1, activation='sigmoid') cho binary classification
     model.add(Dense(1, activation='sigmoid', name='output'))
 
-    # ========== COMPILE ==========
+    # Compile
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
         loss='binary_crossentropy',
-        metrics=[
-            'accuracy',
-            Precision(name='precision'),
-            Recall(name='recall')
-        ]
+        metrics=['accuracy', Precision(name='precision'), Recall(name='recall')]
     )
 
-    # In tóm tắt mô hình
-    print("\n   📋 KIẾN TRÚC MÔ HÌNH:")
     model.summary()
 
     return model
@@ -216,10 +130,6 @@ def build_cnn_model(input_shape):
 def load_training_data(data_dir):
     """
     Load dữ liệu training đã được chuẩn bị từ step 2
-
-    Args:
-        data_dir: Đường dẫn thư mục chứa dữ liệu
-
     Returns:
         X_train, X_val, X_test, y_train, y_val, y_test, class_weights
     """
@@ -319,7 +229,6 @@ def create_callbacks(model_dir, log_dir):
         verbose=1
     )
     callbacks.append(reduce_lr)
-    print(f"   ✅ ReduceLROnPlateau: factor=0.5, patience=5")
 
     # 4. TensorBoard (optional)
     tensorboard_log = log_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -336,16 +245,6 @@ def create_callbacks(model_dir, log_dir):
 def train_model(model, X_train, y_train, X_val, y_val, class_weights, callbacks):
     """
     Huấn luyện mô hình
-
-    Args:
-        model: Keras model
-        X_train, y_train: Dữ liệu training
-        X_val, y_val: Dữ liệu validation
-        class_weights: Dictionary class weights
-        callbacks: List các callbacks
-
-    Returns:
-        history: Training history
     """
     print("\n" + "="*80)
     print("🚀 BẮT ĐẦU HUẤN LUYỆN MÔ HÌNH")
@@ -464,18 +363,9 @@ def evaluate_model(model, X_test, y_test):
 def save_model_and_results(model, history, results, training_time, model_dir, y_pred=None, y_pred_prob=None):
     """
     Lưu model và kết quả training
-
-    Args:
-        model: Trained model
-        history: Training history
-        results: Evaluation results
-        training_time: Thời gian training (seconds)
-        model_dir: Đường dẫn lưu
-        y_pred: Predictions (optional)
-        y_pred_prob: Prediction probabilities (optional)
     """
     print("\n" + "="*80)
-    print("💾 ĐANG LƯU MODEL VÀ KẾT QUẢ...")
+    print(" ĐANG LƯU MODEL VÀ KẾT QUẢ...")
     print("="*80)
 
     model_dir = Path(model_dir)
@@ -484,18 +374,15 @@ def save_model_and_results(model, history, results, training_time, model_dir, y_
     # Lưu model cuối cùng
     final_model_path = model_dir / 'final_model.keras'
     model.save(final_model_path)
-    print(f"   ✅ Final model: {final_model_path}")
 
     # Lưu model weights
     weights_path = model_dir / 'model_weights.weights.h5'
     model.save_weights(weights_path)
-    print(f"   ✅ Model weights: {weights_path}")
 
     # Lưu training history
     history_dict = {key: [float(v) for v in values] for key, values in history.history.items()}
     with open(model_dir / 'training_history.json', 'w') as f:
         json.dump(history_dict, f, indent=4)
-    print(f"   ✅ Training history: training_history.json")
 
     # Lưu kết quả đánh giá với thông tin bổ sung
     results['training_time_seconds'] = float(training_time)
@@ -520,16 +407,13 @@ def save_model_and_results(model, history, results, training_time, model_dir, y_
 
     with open(model_dir / 'evaluation_results.json', 'w') as f:
         json.dump(results, f, indent=4)
-    print(f"   ✅ Evaluation results: evaluation_results.json")
 
     # Lưu predictions nếu có
     if y_pred is not None:
         np.save(model_dir / 'y_pred.npy', y_pred)
-        print(f"   ✅ Predictions: y_pred.npy")
 
     if y_pred_prob is not None:
         np.save(model_dir / 'y_pred_prob.npy', y_pred_prob)
-        print(f"   ✅ Prediction probabilities: y_pred_prob.npy")
 
     # Lưu cấu hình training
     config = {
@@ -544,7 +428,7 @@ def save_model_and_results(model, history, results, training_time, model_dir, y_
     }
     with open(model_dir / 'training_config.json', 'w') as f:
         json.dump(config, f, indent=4)
-    print(f"   ✅ Training config: training_config.json")
+
 
     print(f"\n📁 Tất cả file được lưu tại: {model_dir}")
 
@@ -602,7 +486,6 @@ def plot_training_history(history, model_dir):
         plt.tight_layout()
         plt.savefig(model_dir / 'training_history.png', dpi=150)
         plt.close()
-        print(f"   ✅ Training history plot: training_history.png")
 
     except ImportError:
         print("   ⚠️ matplotlib không có sẵn, bỏ qua việc vẽ biểu đồ")
@@ -663,8 +546,7 @@ def main():
     """Hàm chính để train model"""
 
     print("\n" + "="*80)
-    print("🧠 HUẤN LUYỆN MÔ HÌNH CNN - PHÁT HIỆN LƯU LƯỢNG MẠNG BẤT THƯỜNG")
-    print("   Binary Classification: Benign vs Attack")
+    print("HUẤN LUYỆN MÔ HÌNH CNN - PHÁT HIỆN LƯU LƯỢNG MẠNG BẤT THƯỜNG")
     print("="*80)
 
     # Bước 1: Load dữ liệu
