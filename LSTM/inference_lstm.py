@@ -1,246 +1,213 @@
-import numpy as np
 import pandas as pd
+import numpy as np
 import tensorflow as tf
-import os
 import pickle
 import json
-import argparse
-from tqdm import tqdm
 import glob
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
 
-# ============================================================================ 
-# CONFIGURATION (AUTO-DETECT KAGGLE VS LOCAL)
-# ============================================================================ 
-IS_KAGGLE = os.path.exists('/kaggle/input')
-
-if IS_KAGGLE:
-    print("🌍 ENVIRONMENT: KAGGLE DETECTED")
-    BASE_DIR = "/kaggle/working"
-    MODEL_DIR = os.path.join(BASE_DIR, "models")
-    PROCESSED_DIR = os.path.join(BASE_DIR, "processed_lstm")
-else:
-    print("💻 ENVIRONMENT: LOCAL DESKTOP DETECTED")
-    # Giả sử file này nằm trong GRAPH_IOT/LSTM/
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    # Trỏ ra thư mục gốc để lấy paths
-    BASE_DIR = SCRIPT_DIR
-    MODEL_DIR = os.path.join(BASE_DIR, 'models')
-    PROCESSED_DIR = os.path.join(BASE_DIR, 'processed_lstm')
-
-MODEL_PATH = os.path.join(MODEL_DIR, 'best_lstm_model.keras')
-SCALER_PATH = os.path.join(PROCESSED_DIR, 'scaler.pkl')
-FEATURE_NAMES_PATH = os.path.join(PROCESSED_DIR, 'feature_names.json')
+# ============================================================================
+# CẤU HÌNH
+# ============================================================================
+MODEL_PATH = "/kaggle/working/models/best_lstm_model.keras"
+SCALER_PATH = "/kaggle/working/processed_lstm/scaler.pkl"
+FEATURE_PATH = "/kaggle/working/processed_lstm/feature_names.json"
 WINDOW_SIZE = 10
 
-print(f"   - Model Path: {MODEL_PATH}")
-print(f"   - Scaler Path: {SCALER_PATH}")
 
+class VisualInference:
+    def __init__(self):
+        print("⏳ Loading model & artifacts...")
 
-class LSTMInference:
-    def __init__(self, model_path=MODEL_PATH, scaler_path=SCALER_PATH, feature_path=FEATURE_NAMES_PATH):
-        self.model_path = model_path
-        self.scaler_path = scaler_path
-        self.feature_path = feature_path
-        self.model = None
-        self.scaler = None
-        self.feature_names = None
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError("❌ Không tìm thấy Model! Hãy chạy file Train trước.")
 
-        self._load_artifacts()
-
-    def _load_artifacts(self):
-        """Load Model, Scaler và Metadata"""
-        print("\nLoading model and artifacts...")
-
-        if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"❌ Model not found at {self.model_path}. Train model first!")
-
-        self.model = tf.keras.models.load_model(self.model_path)
-        print("✓ Model loaded.")
-
-        if not os.path.exists(self.scaler_path):
-            raise FileNotFoundError(f"❌ Scaler not found at {self.scaler_path}. Run preprocessing first!")
-
-        with open(self.scaler_path, 'rb') as f:
+        self.model = tf.keras.models.load_model(MODEL_PATH)
+        with open(SCALER_PATH, 'rb') as f:
             self.scaler = pickle.load(f)
-        print("✓ Scaler loaded.")
 
-        if os.path.exists(self.feature_path):
-            with open(self.feature_path, 'r') as f:
-                self.feature_names = json.load(f)
-            print(f"✓ Feature names loaded ({len(self.feature_names)} features).")
+        if os.path.exists(FEATURE_PATH):
+            with open(FEATURE_PATH, 'r') as f:
+                self.features = json.load(f)
         else:
-            print("⚠️ Warning: Feature names file not found. Columns order might be incorrect if CSV varies.")
+            self.features = None
 
-    def preprocess_new_data(self, csv_path):
-        """Xử lý dữ liệu mới giống hệt quy trình train"""
-        print(f"\nProcessing {os.path.basename(csv_path)}...")
+        print("✅ Model loaded successfully.")
+
+    def process_and_predict(self, csv_path):
+        print(f"\nProcessing file: {csv_path.split('/')[-1]}...")
+
+        # 1. Load Data (200k dòng)
         try:
-            df = pd.read_csv(csv_path, low_memory=False, nrows=500000)  # Limit rows for inference safety
+            df = pd.read_csv(csv_path, nrows=200000, low_memory=False)
         except Exception as e:
-            print(f"❌ Error reading file: {e}")
-            return None, None
+            print(f"❌ Error reading CSV: {e}")
+            return
 
-        # 1. Clean Columns
+        # 2. Preprocessing Cleanup
+        # Bỏ cột Label nếu có
         if 'Label' in df.columns:
-            # Lưu lại label thật để đối chiếu nếu cần
-            true_labels = df['Label'].copy()
             df = df.drop(columns=['Label'])
 
-            # Loại bỏ các cột không dùng (giống preprocess)
+        # Bỏ cột rác
         cols_to_drop = ['Timestamp', 'Flow ID', 'Src IP', 'Dst IP', 'Src Port']
-        existing_drop = [c for c in cols_to_drop if c in df.columns]
-        df.drop(columns=existing_drop, inplace=True)
+        df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
 
-        # 2. Numeric Conversion
-        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+        # --- FIX LỖI INFINITY Ở ĐÂY ---
+        # Chuyển về số
+        df = df.apply(pd.to_numeric, errors='coerce')
 
-        # 3. Handle Infinity
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], 0)
+        # Thay thế Infinity bằng NaN, sau đó thay thế NaN bằng 0
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.fillna(0)
 
-        # 4. Check Feature Consistency
-        if self.feature_names:
+        # Đảm bảo kiểu dữ liệu là float32 để tiết kiệm RAM và tránh lỗi
+        df = df.astype(np.float32)
+        # ------------------------------
+
+        # Đồng bộ cột (Align features)
+        if self.features:
             # Thêm cột thiếu
-            missing_cols = set(self.feature_names) - set(df.columns)
-            for c in missing_cols:
-                df[c] = 0
+            for c in self.features:
+                if c not in df.columns:
+                    df[c] = 0
+            # Chỉ lấy đúng các cột đã train, theo đúng thứ tự
+            df = df[self.features]
 
-            # Sắp xếp đúng thứ tự
-            df = df[self.feature_names]
+        # Normalize
+        print("   - Normalizing data...")
+        try:
+            X_scaled = self.scaler.transform(df.values)
+        except ValueError as e:
+            print(f"❌ Lỗi Scaler: {e}")
+            print("   -> Đang cố gắng sửa lỗi bằng cách reset các giá trị quá lớn...")
+            # Fallback: Nếu vẫn lỗi, clip giá trị trong khoảng cho phép của float64
+            df = df.clip(lower=-1e10, upper=1e10)
+            X_scaled = self.scaler.transform(df.values)
 
-        # 5. Normalize
-        X_scaled = self.scaler.transform(df.values)
-
-        return X_scaled, df
-
-    def create_sequences(self, X_scaled):
-        """Tạo Sliding Window"""
-        Xs = []
-        indices = []
-
+        # Tạo Sequence
+        print("   - Creating sequences...")
+        X_seq = []
         if len(X_scaled) <= WINDOW_SIZE:
-            print("⚠️ Data too short for windowing.")
-            return np.array([]), []
+            print("⚠️ File quá ngắn.")
+            return
 
-        # Vectorized implementation for speed could be better, but loop is safe for now
-        # Creating a view is faster but keeping it simple
+        # Loop nhanh
         for i in range(len(X_scaled) - WINDOW_SIZE):
-            Xs.append(X_scaled[i: i + WINDOW_SIZE])
-            indices.append(i + WINDOW_SIZE)
+            X_seq.append(X_scaled[i: i + WINDOW_SIZE])
 
-        return np.array(Xs), indices
-
-    def predict(self, csv_path, threshold=0.5, save_results=True):
-        """Hàm dự đoán chính"""
-        # 1. Preprocess
-        result = self.preprocess_new_data(csv_path)
-        if result is None: return
-        X_scaled, df_original = result
-
-        if X_scaled is None: return
-
-        # 2. Sequence
-        X_seq, indices = self.create_sequences(X_scaled)
-
-        if len(X_seq) == 0:
-            return None
-
-        print(f"Running inference on {len(X_seq)} sequences...")
+        X_seq = np.array(X_seq)
 
         # 3. Predict
-        # batch_size lớn để nhanh
-        probs = self.model.predict(X_seq, batch_size=2048, verbose=1)
+        print(f"   - Running inference on {len(X_seq)} sequences...")
+        probs = self.model.predict(X_seq, batch_size=2048, verbose=1).flatten()
 
-        # 4. Analyze Results
-        preds = (probs > threshold).astype(int).flatten()
+        # 4. Visualize
+        self.visualize(probs, csv_path)
 
-        n_attacks = np.sum(preds)
-        print(f"\n===== INFERENCE RESULTS: {os.path.basename(csv_path)} =====")
-        print(f"Total Flows: {len(preds)}")
-        print(f"Benign:      {len(preds) - n_attacks}")
-        print(f"Malicious:   {n_attacks} ({(n_attacks / len(preds)) * 100:.2f}%)")
+    def visualize(self, probs, filename):
+        print("📊 Generating Visualization...")
+        sns.set_style("whitegrid")
+        preds = (probs > 0.5).astype(int)
 
-        if n_attacks > 0:
-            print("⚠️ ATTACK DETECTED!")
+        fig = plt.figure(figsize=(20, 10))
+        gs = fig.add_gridspec(2, 2)
 
-            if save_results:
-                output_file = csv_path.replace('.csv', '_predictions.csv')
-                # Nếu trên Kaggle, đổi path output về /kaggle/working
-                if IS_KAGGLE:
-                    output_file = os.path.join(BASE_DIR, f"pred_{os.path.basename(csv_path)}")
+        # Chart 1: Time Series
+        ax1 = fig.add_subplot(gs[0, :])
+        ax1.plot(probs, label='Attack Probability', color='royalblue', alpha=0.6, linewidth=0.8)
 
-                # Tạo df kết quả
-                # Chỉ lưu các dòng tương ứng với cuối window
-                result_df = df_original.iloc[indices].copy()
-                result_df['Attack_Probability'] = probs.flatten()
-                result_df['Is_Attack'] = preds
+        attacks = np.where(preds == 1)[0]
+        if len(attacks) > 0:
+            ax1.scatter(attacks, probs[attacks], color='red', s=3, label='Detected Attack', zorder=5)
 
-                # Lưu file
-                result_df.to_csv(output_file, index=False)
-                print(f"📝 Detailed predictions saved to: {output_file}")
+        ax1.axhline(0.5, color='orange', linestyle='--', label='Threshold (0.5)')
+        ax1.set_title(f'Network Traffic Anomaly: {filename.split("/")[-1]}', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('Probability')
+        ax1.legend(loc='upper right')
 
+        # Chart 2: Histogram
+        ax2 = fig.add_subplot(gs[1, 0])
+        sns.histplot(probs, bins=50, kde=True, ax=ax2, color='purple')
+        ax2.set_title('Confidence Distribution')
+        ax2.set_xlabel('Probability Score')
+
+        # Chart 3: Pie Chart
+        ax3 = fig.add_subplot(gs[1, 1])
+        n_benign = len(preds) - np.sum(preds)
+        n_attack = np.sum(preds)
+
+        if n_attack == 0 and n_benign == 0:
+            ax3.text(0.5, 0.5, "No Data", ha='center')
         else:
-            print("✓ No anomalies detected.")
+            ax3.pie([n_benign, n_attack],
+                    labels=[f'Benign ({n_benign})', f'Attack ({n_attack})'],
+                    colors=['#4CAF50', '#F44336'],
+                    autopct='%1.1f%%',
+                    startangle=90,
+                    explode=(0, 0.1))
+            ax3.set_title(f'Attack Ratio (Total: {len(preds)})')
 
-        return preds, probs
-
-
-def main():
-    parser = argparse.ArgumentParser(description='LSTM Inference')
-    parser.add_argument('path', type=str, nargs='?', help='Path to CSV file or Directory')
-    parser.add_argument('--threshold', type=float, default=0.5)
-
-    # ====================================================================
-    # SỬA LỖI Ở ĐÂY: Thêm args=[] để chạy được trong Notebook/Kaggle
-    # ====================================================================
-    args = parser.parse_args(args=[])
-
-    # Nếu bạn muốn chỉ định file cụ thể để test thay vì để nó tự tìm,
-    # hãy bỏ comment dòng dưới và điền đường dẫn vào:
-    # args.path = "/kaggle/input/ids-intrusion-csv/02-14-2018.csv"
-
-    predictor = LSTMInference()
-
-    # Nếu không truyền argument (hoặc args=[]), thử chạy test với file trong dataset (demo)
-    if not args.path:
-        print("No path provided via arguments. Searching for a demo CSV file...")
-        if IS_KAGGLE:
-            # Tìm file trong input - Cập nhật đúng folder bạn đang dùng
-            possible_dirs = [
-                "/kaggle/input/ids-intrusion-csv",
-                "/kaggle/input/cicids2018"
-            ]
-            demo_files = []
-            for d in possible_dirs:
-                found = glob.glob(os.path.join(d, "*.csv"))
-                if found:
-                    demo_files.extend(found)
-
-            # Fallback nếu không tìm thấy trong folder chỉ định
-            if not demo_files:
-                demo_files = glob.glob("/kaggle/input/**/*.csv", recursive=True)
-        else:
-            # Tìm file local
-            demo_files = glob.glob(os.path.join(os.path.dirname(BASE_DIR), "data_IOT", "*.csv"))
-
-        if demo_files:
-            # Lấy file đầu tiên tìm thấy để test
-            target_path = demo_files[0]
-            print(f"Found demo file: {target_path}")
-            predictor.predict(target_path)
-        else:
-            print("❌ No demo files found in /kaggle/input. Please check your dataset.")
-    else:
-        # Nếu là file
-        if os.path.isfile(args.path):
-            predictor.predict(args.path, args.threshold)
-        # Nếu là folder
-        elif os.path.isdir(args.path):
-            csv_files = glob.glob(os.path.join(args.path, "*.csv"))
-            print(f"Found {len(csv_files)} CSV files in directory.")
-            for f in csv_files:
-                predictor.predict(f, args.threshold)
+        plt.tight_layout()
+        plt.show()
+        print("✅ Visualization Done.")
 
 
+# ============================================================================
+# MAIN EXECUTION (ĐÃ SỬA ĐỂ CHỌN FILE NHIỀU ATTACK)
+# ============================================================================
 if __name__ == "__main__":
-    main()
+    predictor = VisualInference()
+
+    # 1. Tìm tất cả file CSV
+    search_patterns = [
+        "/kaggle/input/cicids2018/CICIDS2018_CSV/*.csv",
+        "/kaggle/input/ids-intrusion-csv/*.csv",
+        "/kaggle/input/cse-cic-ids2018/*.csv",
+        "/kaggle/input/**/*.csv"
+    ]
+
+    all_files = []
+    for pattern in search_patterns:
+        found = glob.glob(pattern, recursive=True)
+        all_files.extend(found)
+
+    # Loại bỏ trùng lặp nếu có
+    all_files = list(set(all_files))
+
+    if all_files:
+        selected_file = None
+
+        # --- DANH SÁCH ƯU TIÊN (Priority List) ---
+        # Tìm file chứa DDoS (nhiều Attack nhất) để biểu đồ đẹp
+        priority_keywords = [
+            "02-20-2018",  # DDoS (LOIC) - Rất nhiều attack
+            "02-21-2018",  # DDoS (LOIC/HOIC)
+            "02-15-2018",  # DoS (GoldenEye)
+            "02-14-2018"  # BruteForce
+        ]
+
+        print("🔎 Đang tìm kiếm file chứa nhiều tấn công (DDoS/DoS)...")
+
+        for keyword in priority_keywords:
+            for f in all_files:
+                if keyword in f:
+                    selected_file = f
+                    print(f"✅ Đã tìm thấy file ưu tiên: {keyword}")
+                    break
+            if selected_file: break
+
+        # Nếu không tìm thấy file ưu tiên, lấy file bất kỳ
+        if selected_file is None:
+            selected_file = all_files[0]
+            print(f"⚠️ Không tìm thấy file DDoS, sử dụng file ngẫu nhiên: {selected_file}")
+
+        print(f"👉 Bắt đầu xử lý file: {selected_file}")
+
+        # Chạy dự đoán
+        predictor.process_and_predict(selected_file)
+
+    else:
+        print("❌ Không tìm thấy bất kỳ file CSV nào trong /kaggle/input.")

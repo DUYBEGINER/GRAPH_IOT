@@ -42,7 +42,7 @@ if IS_KAGGLE:
         RAW_DATA_DIR = "/kaggle/input"  # Hy vọng user mount đúng
 
     OUTPUT_DIR = "/kaggle/working/processed_lstm"
-    TARGET_ROWS = 2000000  # Kaggle RAM mạnh, lấy 2 triệu dòng
+    TARGET_ROWS = 3500000  # Kaggle RAM mạnh, lấy 2 triệu dòng
     print(f"   - Raw Data: {RAW_DATA_DIR}")
     print(f"   - Output:   {OUTPUT_DIR}")
     print(f"   - Target:   {TARGET_ROWS:,} rows")
@@ -53,7 +53,7 @@ else:
     # Local: Data nằm ở thư mục cha ../data_IOT
     RAW_DATA_DIR = os.path.join(os.path.dirname(BASE_DIR), "data_IOT")
     OUTPUT_DIR = os.path.join(BASE_DIR, 'processed_lstm')
-    TARGET_ROWS = 2000000  # Local RAM hạn chế, lấy 500k dòng
+    TARGET_ROWS = 3500000  # Local RAM hạn chế, lấy 500k dòng
     print(f"   - Raw Data: {RAW_DATA_DIR}")
     print(f"   - Output:   {OUTPUT_DIR}")
     print(f"   - Target:   {TARGET_ROWS:,} rows")
