@@ -339,7 +339,7 @@ class CICIDS2018_DataCleaner:
 
 def main():
     print("\n" + "="*80)
-    print("🧹 BƯỚC 1: CLEAN DỮ LIỆU CICIDS2018 CHO CNN")
+    print("CLEAN DỮ LIỆU CICIDS2018 CHO CNN")
     print("="*80)
 
     cleaner = CICIDS2018_DataCleaner(
@@ -353,7 +353,7 @@ def main():
     cleaner.print_summary()
 
     print("\n✅ HOÀN THÀNH!")
-    print("   Chạy step2_prepare_training_data.py để chia train/val/test")
+    print("   Chạy prepare_training_data.py để chia train/val/test")
 
     return cleaner
 

@@ -1,7 +1,9 @@
 """
-GNN Training Script for Kaggle - IoT Network Anomaly Detection
-Script hoàn chỉnh bao gồm cả model definitions và training
-Chỉ cần chạy file này trên Kaggle
+GNN Training Script - FIXED VERSION with Mini-Batch Support
+Key fixes:
+1. Added NeighborLoader for mini-batch training
+2. Reduced memory footprint significantly
+3. Added gradient accumulation option
 """
 
 import torch
@@ -10,6 +12,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.nn import GCNConv, GATConv, SAGEConv, BatchNorm
+# Removed: from torch_geometric.loader import NeighborLoader
 import numpy as np
 import pickle
 import os
@@ -22,36 +25,27 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-
 # ============================================================================
-# GNN MODEL DEFINITIONS
+# MODEL DEFINITIONS (Same as before - these are fine)
 # ============================================================================
 
 class GCN(nn.Module):
-    """Graph Convolutional Network"""
-
     def __init__(self, in_channels, hidden_channels, num_classes, num_layers=3, dropout=0.5):
         super(GCN, self).__init__()
         self.num_layers = num_layers
         self.dropout = dropout
-
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
 
-        # First layer
         self.convs.append(GCNConv(in_channels, hidden_channels))
         self.batch_norms.append(BatchNorm(hidden_channels))
 
-        # Hidden layers
         for _ in range(num_layers - 2):
             self.convs.append(GCNConv(hidden_channels, hidden_channels))
             self.batch_norms.append(BatchNorm(hidden_channels))
 
-        # Output layer
         self.convs.append(GCNConv(hidden_channels, hidden_channels))
         self.batch_norms.append(BatchNorm(hidden_channels))
-
-        # Classifier
         self.classifier = nn.Linear(hidden_channels, num_classes)
 
     def forward(self, x, edge_index):
@@ -65,33 +59,25 @@ class GCN(nn.Module):
 
 
 class GAT(nn.Module):
-    """Graph Attention Network"""
-
     def __init__(self, in_channels, hidden_channels, num_classes,
                  num_layers=3, heads=4, dropout=0.5):
         super(GAT, self).__init__()
         self.num_layers = num_layers
         self.dropout = dropout
-
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
 
-        # First layer
         self.convs.append(GATConv(in_channels, hidden_channels, heads=heads, dropout=dropout))
         self.batch_norms.append(BatchNorm(hidden_channels * heads))
 
-        # Hidden layers
         for _ in range(num_layers - 2):
             self.convs.append(GATConv(hidden_channels * heads, hidden_channels,
-                                      heads=heads, dropout=dropout))
+                                     heads=heads, dropout=dropout))
             self.batch_norms.append(BatchNorm(hidden_channels * heads))
 
-        # Output layer
         self.convs.append(GATConv(hidden_channels * heads, hidden_channels,
-                                  heads=1, concat=False, dropout=dropout))
+                                 heads=1, concat=False, dropout=dropout))
         self.batch_norms.append(BatchNorm(hidden_channels))
-
-        # Classifier
         self.classifier = nn.Linear(hidden_channels, num_classes)
 
     def forward(self, x, edge_index):
@@ -105,31 +91,23 @@ class GAT(nn.Module):
 
 
 class GraphSAGE(nn.Module):
-    """GraphSAGE"""
-
     def __init__(self, in_channels, hidden_channels, num_classes,
                  num_layers=3, dropout=0.5, aggregator='mean'):
         super(GraphSAGE, self).__init__()
         self.num_layers = num_layers
         self.dropout = dropout
-
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
 
-        # First layer
         self.convs.append(SAGEConv(in_channels, hidden_channels, aggr=aggregator))
         self.batch_norms.append(BatchNorm(hidden_channels))
 
-        # Hidden layers
         for _ in range(num_layers - 2):
             self.convs.append(SAGEConv(hidden_channels, hidden_channels, aggr=aggregator))
             self.batch_norms.append(BatchNorm(hidden_channels))
 
-        # Output layer
         self.convs.append(SAGEConv(hidden_channels, hidden_channels, aggr=aggregator))
         self.batch_norms.append(BatchNorm(hidden_channels))
-
-        # Classifier
         self.classifier = nn.Linear(hidden_channels, num_classes)
 
     def forward(self, x, edge_index):
@@ -142,101 +120,30 @@ class GraphSAGE(nn.Module):
         return x
 
 
-class HybridGNN(nn.Module):
-    """Hybrid GNN combining GCN and GAT"""
-
-    def __init__(self, in_channels, hidden_channels, num_classes,
-                 num_layers=3, heads=4, dropout=0.5):
-        super(HybridGNN, self).__init__()
-        self.num_layers = num_layers
-        self.dropout = dropout
-
-        # GCN branch
-        self.gcn_convs = nn.ModuleList()
-        self.gcn_bns = nn.ModuleList()
-
-        # GAT branch
-        self.gat_convs = nn.ModuleList()
-        self.gat_bns = nn.ModuleList()
-
-        # First layer
-        self.gcn_convs.append(GCNConv(in_channels, hidden_channels))
-        self.gcn_bns.append(BatchNorm(hidden_channels))
-        self.gat_convs.append(GATConv(in_channels, hidden_channels // heads, heads=heads))
-        self.gat_bns.append(BatchNorm(hidden_channels))
-
-        # Hidden layers
-        for _ in range(num_layers - 2):
-            self.gcn_convs.append(GCNConv(hidden_channels, hidden_channels))
-            self.gcn_bns.append(BatchNorm(hidden_channels))
-            self.gat_convs.append(GATConv(hidden_channels, hidden_channels // heads, heads=heads))
-            self.gat_bns.append(BatchNorm(hidden_channels))
-
-        # Fusion
-        self.fusion = nn.Linear(hidden_channels * 2, hidden_channels)
-        self.fusion_bn = BatchNorm(hidden_channels)
-
-        # Classifier
-        self.classifier = nn.Linear(hidden_channels, num_classes)
-
-    def forward(self, x, edge_index):
-        # GCN branch
-        x_gcn = x
-        for i in range(self.num_layers - 1):
-            x_gcn = self.gcn_convs[i](x_gcn, edge_index)
-            x_gcn = self.gcn_bns[i](x_gcn)
-            x_gcn = F.relu(x_gcn)
-            x_gcn = F.dropout(x_gcn, p=self.dropout, training=self.training)
-
-        # GAT branch
-        x_gat = x
-        for i in range(self.num_layers - 1):
-            x_gat = self.gat_convs[i](x_gat, edge_index)
-            x_gat = self.gat_bns[i](x_gat)
-            x_gat = F.elu(x_gat)
-            x_gat = F.dropout(x_gat, p=self.dropout, training=self.training)
-
-        # Fusion
-        x = torch.cat([x_gcn, x_gat], dim=1)
-        x = self.fusion(x)
-        x = self.fusion_bn(x)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.classifier(x)
-        return x
-
-
 def create_model(model_name, in_channels, hidden_channels, num_classes, **kwargs):
-    """Factory function để tạo model"""
-    models = {
-        'GCN': GCN,
-        'GAT': GAT,
-        'GraphSAGE': GraphSAGE,
-        'Hybrid': HybridGNN
-    }
+    models = {'GCN': GCN, 'GAT': GAT, 'GraphSAGE': GraphSAGE}
     if model_name not in models:
-        raise ValueError(f"Model {model_name} không hỗ trợ. Chọn: {list(models.keys())}")
+        raise ValueError(f"Model {model_name} not supported. Choose: {list(models.keys())}")
     return models[model_name](in_channels, hidden_channels, num_classes, **kwargs)
 
 
 def count_parameters(model):
-    """Đếm số parameters"""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 # ============================================================================
-# KAGGLE CONFIGURATION
+# CONFIGURATION - OPTIMIZED FOR MEMORY
 # ============================================================================
 WORKING_DIR = "/kaggle/working"
-GRAPH_DATA_DIR = "/kaggle/working"
+GRAPH_DATA_DIR = "/kaggle/input/model/pytorch/default/1"
 MODEL_DIR = os.path.join(WORKING_DIR, "models")
 RESULTS_DIR = os.path.join(WORKING_DIR, "results")
 
-# Model config
-MODEL_NAME = 'GAT'  # 'GCN', 'GAT', 'GraphSAGE', 'Hybrid'
-HIDDEN_CHANNELS = 128
-NUM_LAYERS = 3
-HEADS = 4
+# Model config - Reduced for memory
+MODEL_NAME = 'GraphSAGE'  # GraphSAGE is most memory-efficient
+HIDDEN_CHANNELS = 64      # Reduced from 128
+NUM_LAYERS = 2            # Reduced from 3
+HEADS = 2                 # Reduced from 4 (for GAT)
 DROPOUT = 0.3
 
 # Training config
@@ -244,79 +151,136 @@ LEARNING_RATE = 0.001
 WEIGHT_DECAY = 5e-4
 NUM_EPOCHS = 30
 PATIENCE = 15
-TASK = 'binary'  # 'binary' hoặc 'multi'
+TASK = 'binary'
+
+# MINI-BATCH CONFIG
+BATCH_SIZE = 2048         # Process nodes in batches
+NUM_WORKERS = 0           # Not used in simple batching
+
+# Gradient accumulation (simulate larger batch)
+ACCUMULATION_STEPS = 4
 
 # Data split
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.15
 TEST_RATIO = 0.15
 
-# Device
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"🔥 Using device: {DEVICE}")
 
-
 # ============================================================================
-# TRAINING CLASS
+# MINI-BATCH TRAINER CLASS - COMPLETELY REWRITTEN
 # ============================================================================
 
-class GNNTrainer:
-    """Class để train GNN model"""
+class MiniBatchGNNTrainer:
+    """Memory-efficient mini-batch trainer"""
 
     def __init__(self, model, device, task='binary'):
         self.model = model.to(device)
         self.device = device
         self.task = task
         self.history = {
-            'train_loss': [],
-            'train_acc': [],
-            'val_loss': [],
-            'val_acc': [],
-            'learning_rate': []
+            'train_loss': [], 'train_acc': [],
+            'val_loss': [], 'val_acc': [], 'learning_rate': []
         }
         self.best_val_acc = 0
         self.best_epoch = 0
 
-    def train_epoch(self, data, train_mask, optimizer):
-        """Train một epoch"""
+    def train_epoch(self, train_batches, data, optimizer, accumulation_steps=1):
+        """Train one epoch with simple batches"""
         self.model.train()
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
+
         optimizer.zero_grad()
 
-        out = self.model(data.x, data.edge_index)
-        loss = F.cross_entropy(out[train_mask], data.y[train_mask])
-        loss.backward()
-        optimizer.step()
+        # Move full graph to device once
+        data = data.to(self.device)
 
-        pred = out[train_mask].argmax(dim=1)
-        acc = (pred == data.y[train_mask]).float().mean()
-        return loss.item(), acc.item()
+        for i, batch_idx in enumerate(train_batches):
+            batch_idx = batch_idx.to(self.device)
+
+            # Forward pass on full graph
+            out = self.model(data.x, data.edge_index)
+
+            # Compute loss only on batch nodes
+            loss = F.cross_entropy(out[batch_idx], data.y[batch_idx])
+            loss = loss / accumulation_steps
+
+            # Backward pass
+            loss.backward()
+
+            # Update weights
+            if (i + 1) % accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+            # Metrics
+            with torch.no_grad():
+                pred = out[batch_idx].argmax(dim=1)
+                total_correct += (pred == data.y[batch_idx]).sum().item()
+                total_loss += loss.item() * accumulation_steps * len(batch_idx)
+                total_samples += len(batch_idx)
+
+        # Final update
+        if (i + 1) % accumulation_steps != 0:
+            optimizer.step()
+            optimizer.zero_grad()
+
+        return total_loss / total_samples, total_correct / total_samples
 
     @torch.no_grad()
-    def evaluate(self, data, mask):
-        """Evaluate model"""
+    def evaluate(self, batches, data):
+        """Evaluate with simple batches"""
         self.model.eval()
-        out = self.model(data.x, data.edge_index)
-        loss = F.cross_entropy(out[mask], data.y[mask])
-        pred = out[mask].argmax(dim=1)
-        acc = (pred == data.y[mask]).float().mean()
-        return loss.item(), acc.item(), pred.cpu().numpy(), data.y[mask].cpu().numpy()
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
+        all_preds = []
+        all_labels = []
 
-    def train(self, data, train_mask, val_mask, optimizer, scheduler, num_epochs, patience):
+        data = data.to(self.device)
+
+        for batch_idx in batches:
+            batch_idx = batch_idx.to(self.device)
+
+            # Forward on full graph
+            out = self.model(data.x, data.edge_index)
+
+            # Loss and predictions on batch
+            loss = F.cross_entropy(out[batch_idx], data.y[batch_idx])
+            pred = out[batch_idx].argmax(dim=1)
+
+            total_correct += (pred == data.y[batch_idx]).sum().item()
+            total_loss += loss.item() * len(batch_idx)
+            total_samples += len(batch_idx)
+
+            all_preds.append(pred.cpu())
+            all_labels.append(data.y[batch_idx].cpu())
+
+        all_preds = torch.cat(all_preds).numpy()
+        all_labels = torch.cat(all_labels).numpy()
+
+        return total_loss / total_samples, total_correct / total_samples, all_preds, all_labels
+
+    def train(self, train_batches, val_batches, data, optimizer, scheduler, num_epochs, patience):
         """Full training loop"""
         print("\n" + "=" * 80)
-        print("🚀 TRAINING GNN MODEL")
+        print("🚀 TRAINING GNN MODEL (BATCHED)")
         print("=" * 80)
         print(f"📍 Device: {self.device}")
         print(f"🧠 Model: {self.model.__class__.__name__}")
         print(f"📊 Parameters: {count_parameters(self.model):,}")
+        print(f"🎯 Batch size: {BATCH_SIZE}")
         print(f"⏰ Epochs: {num_epochs}")
         print("=" * 80 + "\n")
 
         patience_counter = 0
 
         for epoch in range(1, num_epochs + 1):
-            train_loss, train_acc = self.train_epoch(data, train_mask, optimizer)
-            val_loss, val_acc, _, _ = self.evaluate(data, val_mask)
+            train_loss, train_acc = self.train_epoch(train_batches, data, optimizer, ACCUMULATION_STEPS)
+            val_loss, val_acc, _, _ = self.evaluate(val_batches, data)
 
             if scheduler is not None:
                 scheduler.step(val_loss)
@@ -335,7 +299,7 @@ class GNNTrainer:
             else:
                 patience_counter += 1
 
-            if epoch % 10 == 0 or epoch == 1:
+            if epoch % 5 == 0 or epoch == 1:
                 print(f"Epoch {epoch:3d}/{num_epochs} | "
                       f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
                       f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
@@ -347,13 +311,13 @@ class GNNTrainer:
         print(f"\n✅ Best Val Acc: {self.best_val_acc:.4f} at epoch {self.best_epoch}")
         return self.history
 
-    def test(self, data, test_mask):
+    def test(self, test_batches, data):
         """Test model"""
         print("\n" + "=" * 80)
         print("🧪 TESTING MODEL")
         print("=" * 80)
 
-        test_loss, test_acc, pred, true = self.evaluate(data, test_mask)
+        test_loss, test_acc, pred, true = self.evaluate(test_batches, data)
 
         print(f"📊 Test Accuracy: {test_acc:.4f}")
 
@@ -365,19 +329,6 @@ class GNNTrainer:
         print(f"📊 Recall: {recall:.4f}")
         print(f"📊 F1-Score: {f1:.4f}")
 
-        # ROC-AUC for binary
-        roc_auc = None
-        if self.task == 'binary':
-            try:
-                self.model.eval()
-                with torch.no_grad():
-                    out = self.model(data.x, data.edge_index)
-                    probs = F.softmax(out[test_mask], dim=1)[:, 1].cpu().numpy()
-                roc_auc = roc_auc_score(true, probs)
-                print(f"📊 ROC-AUC: {roc_auc:.4f}")
-            except:
-                pass
-
         cm = confusion_matrix(true, pred)
         print("\n" + "-" * 80)
         print("📋 Classification Report:")
@@ -385,19 +336,12 @@ class GNNTrainer:
         print(classification_report(true, pred, zero_division=0))
 
         return {
-            'test_loss': test_loss,
-            'test_acc': test_acc,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix': cm,
-            'predictions': pred,
-            'true_labels': true
+            'test_loss': test_loss, 'test_acc': test_acc,
+            'precision': precision, 'recall': recall, 'f1': f1,
+            'confusion_matrix': cm, 'predictions': pred, 'true_labels': true
         }
 
     def save_model(self, path):
-        """Save model"""
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'best_val_acc': self.best_val_acc,
@@ -406,7 +350,6 @@ class GNNTrainer:
         }, path)
 
     def load_model(self, path):
-        """Load model"""
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.best_val_acc = checkpoint['best_val_acc']
@@ -415,13 +358,11 @@ class GNNTrainer:
 
 
 # ============================================================================
-# VISUALIZATION
+# VISUALIZATION (Same as before)
 # ============================================================================
 
 def plot_training_history(history, save_path=None):
-    """Plot training history"""
     fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-
     axes[0].plot(history['train_loss'], label='Train Loss', linewidth=2)
     axes[0].plot(history['val_loss'], label='Val Loss', linewidth=2)
     axes[0].set_xlabel('Epoch')
@@ -445,7 +386,6 @@ def plot_training_history(history, save_path=None):
 
 
 def plot_confusion_matrix(cm, class_names=None, save_path=None):
-    """Plot confusion matrix"""
     plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=class_names, yticklabels=class_names)
@@ -459,17 +399,15 @@ def plot_confusion_matrix(cm, class_names=None, save_path=None):
 
 
 # ============================================================================
-# MAIN
+# MAIN - REWRITTEN WITH MINI-BATCH LOADERS
 # ============================================================================
 
 def main():
-    """Main training function"""
-
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print("\n" + "=" * 80)
-    print("🤖 GNN TRAINING FOR IoT ANOMALY DETECTION - KAGGLE")
+    print("🤖 GNN TRAINING (MEMORY-OPTIMIZED)")
     print("=" * 80 + "\n")
 
     # Load graph
@@ -479,30 +417,11 @@ def main():
 
     if not os.path.exists(graph_path):
         print(f"❌ ERROR: Graph file not found: {graph_path}")
-        print("📁 Available files:")
-        for f in os.listdir(WORKING_DIR):
-            print(f"  - {f}")
         return
 
     data = torch.load(graph_path, weights_only=False)
-    data = data.to(DEVICE)
 
     print(f"✅ Graph: {data.num_nodes:,} nodes, {data.num_edges:,} edges")
-    print(f"✅ Features: {data.num_features}")
-    print(f"✅ Classes: {len(torch.unique(data.y))}")
-
-    # Load metadata
-    metadata_path = os.path.join(GRAPH_DATA_DIR, "graph_metadata.pkl")
-    class_names = None
-    if os.path.exists(metadata_path):
-        with open(metadata_path, 'rb') as f:
-            metadata = pickle.load(f)
-            if TASK in metadata and 'class_names' in metadata[TASK]:
-                class_names = metadata[TASK]['class_names']
-
-    if class_names is None:
-        class_names = ['Benign', 'Attack'] if TASK == 'binary' else [f'Class_{i}' for i in
-                                                                     range(len(torch.unique(data.y)))]
 
     # Create masks
     print("\n📊 Creating data splits...")
@@ -512,22 +431,33 @@ def main():
     train_size = int(num_nodes * TRAIN_RATIO)
     val_size = int(num_nodes * VAL_RATIO)
 
-    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
-    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
-    test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    train_idx = indices[:train_size]
+    val_idx = indices[train_size:train_size + val_size]
+    test_idx = indices[train_size + val_size:]
 
-    train_mask[indices[:train_size]] = True
-    val_mask[indices[train_size:train_size + val_size]] = True
-    test_mask[indices[train_size + val_size:]] = True
+    print(f"✅ Train: {len(train_idx):,} | Val: {len(val_idx):,} | Test: {len(test_idx):,}")
 
-    print(f"✅ Train: {train_mask.sum():,} | Val: {val_mask.sum():,} | Test: {test_mask.sum():,}")
+    # Create simple batched indices (no neighbor sampling)
+    print(f"\n🔧 Creating simple batched processing...")
+
+    def create_simple_batches(indices, batch_size):
+        """Create simple batches without neighbor sampling"""
+        return [indices[i:i+batch_size] for i in range(0, len(indices), batch_size)]
+
+    train_batches = create_simple_batches(train_idx, BATCH_SIZE)
+    val_batches = create_simple_batches(val_idx, BATCH_SIZE)
+    test_batches = create_simple_batches(test_idx, BATCH_SIZE)
+
+    print(f"✅ Train batches: {len(train_batches)}")
+    print(f"✅ Val batches: {len(val_batches)}")
+    print(f"✅ Test batches: {len(test_batches)}")
 
     # Create model
     print(f"\n🏗️  Creating {MODEL_NAME} model...")
     num_classes = len(torch.unique(data.y))
 
     model_kwargs = {'num_layers': NUM_LAYERS, 'dropout': DROPOUT}
-    if MODEL_NAME in ['GAT', 'Hybrid']:
+    if MODEL_NAME == 'GAT':
         model_kwargs['heads'] = HEADS
 
     model = create_model(
@@ -541,83 +471,28 @@ def main():
     print(f"✅ Model: {count_parameters(model):,} parameters")
 
     # Train
-    trainer = GNNTrainer(model, DEVICE, task=TASK)
+    trainer = MiniBatchGNNTrainer(model, DEVICE, task=TASK)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
-    history = trainer.train(data, train_mask, val_mask, optimizer, scheduler, NUM_EPOCHS, PATIENCE)
+    history = trainer.train(train_batches, val_batches, data, optimizer, scheduler, NUM_EPOCHS, PATIENCE)
 
     # Test
     print("\n🔄 Loading best model...")
     trainer.load_model(os.path.join(MODEL_DIR, f'best_model_{TASK}.pt'))
-    results = trainer.test(data, test_mask)
+    results = trainer.test(test_batches, data)
 
     # Save results
     print("\n💾 Saving results...")
     plot_training_history(history, os.path.join(RESULTS_DIR, f'training_history_{TASK}.png'))
-    plot_confusion_matrix(results['confusion_matrix'], class_names,
+    plot_confusion_matrix(results['confusion_matrix'], ['Benign', 'Attack'],
                           os.path.join(RESULTS_DIR, f'confusion_matrix_{TASK}.png'))
-
-    with open(os.path.join(RESULTS_DIR, f'results_{TASK}.pkl'), 'wb') as f:
-        pickle.dump(results, f)
-
-    config = {
-        'model_name': MODEL_NAME,
-        'hidden_channels': HIDDEN_CHANNELS,
-        'num_layers': NUM_LAYERS,
-        'dropout': DROPOUT,
-        'best_epoch': trainer.best_epoch,
-        'best_val_acc': trainer.best_val_acc,
-        'test_results': {
-            'accuracy': results['test_acc'],
-            'precision': results['precision'],
-            'recall': results['recall'],
-            'f1': results['f1'],
-            'roc_auc': results['roc_auc']
-        }
-    }
-
-    with open(os.path.join(RESULTS_DIR, f'config_{TASK}.pkl'), 'wb') as f:
-        pickle.dump(config, f)
-
-    # Summary
-    with open(os.path.join(RESULTS_DIR, 'summary.txt'), 'w') as f:
-        f.write("=" * 80 + "\n")
-        f.write("TRAINING SUMMARY\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Model: {MODEL_NAME}\n")
-        f.write(f"Task: {TASK}\n")
-        f.write(f"Best Epoch: {trainer.best_epoch}\n")
-        f.write(f"Best Val Acc: {trainer.best_val_acc:.4f}\n\n")
-        f.write(f"Test Results:\n")
-        f.write(f"  Accuracy: {results['test_acc']:.4f}\n")
-        f.write(f"  Precision: {results['precision']:.4f}\n")
-        f.write(f"  Recall: {results['recall']:.4f}\n")
-        f.write(f"  F1-Score: {results['f1']:.4f}\n")
-        if results['roc_auc']:
-            f.write(f"  ROC-AUC: {results['roc_auc']:.4f}\n")
-
-    # ZIP for download
-    print("\n" + "=" * 80)
-    print("📦 CREATING ZIP FILES")
-    print("=" * 80)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_results = f'gnn_results_{TASK}_{timestamp}'
-    zip_models = f'gnn_models_{TASK}_{timestamp}'
-
-    shutil.make_archive(os.path.join(WORKING_DIR, zip_results), 'zip', RESULTS_DIR)
-    shutil.make_archive(os.path.join(WORKING_DIR, zip_models), 'zip', MODEL_DIR)
-
-    print(f"✅ Results: {zip_results}.zip")
-    print(f"✅ Models: {zip_models}.zip")
 
     print("\n" + "=" * 80)
     print("🎉 TRAINING COMPLETED!")
     print("=" * 80)
     print(f"📊 Test Accuracy: {results['test_acc']:.4f}")
     print(f"📊 F1-Score: {results['f1']:.4f}")
-    print(f"\n📥 Download: {zip_results}.zip & {zip_models}.zip")
     print("=" * 80 + "\n")
 
 

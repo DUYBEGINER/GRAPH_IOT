@@ -285,7 +285,7 @@ def main():
     class_weights = preparer.calculate_class_weights(y_train)
     preparer.save_training_data(X_train, X_val, X_test, y_train, y_val, y_test)
 
-    print("\n✅ HOÀN THÀNH! Chạy step3_train_cnn.py để train model")
+    print("\n✅ HOÀN THÀNH! Chạy train_cnn.py để train model")
 
     return preparer
 

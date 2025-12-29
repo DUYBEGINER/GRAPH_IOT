@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 DATA_DIR = r"D:\PROJECT\Machine Learning\IOT\CICIDS2018-CSV"
-OUTPUT_DIR = r"D:\PROJECT\Machine Learning\IOT\processed_data"
+OUTPUT_DIR = r"processed_data"
 
 # MEMORY OPTIMIZATION:
 # Full dataset (~16M rows) cần ~20GB RAM

@@ -26,7 +26,6 @@ SIMILARITY_THRESHOLD = 0.5  # Ngưỡng similarity để tạo edge
 GRAPH_TYPE = 'knn'  # 'knn' hoặc 'similarity'
 MAX_SAMPLES = 2000000  # Giới hạn số samples để training nhanh
 
-
 # ============================================================================
 # GRAPH CONSTRUCTION CLASS
 # ============================================================================
