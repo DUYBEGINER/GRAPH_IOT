@@ -702,7 +702,7 @@ def main():
     """Main function để chạy demo"""
 
     # Cấu hình
-    MODEL_PATH = "D:/PROJECT/Machine Learning/IOT/GNN/kaggle/best_model_binary.pt"
+    MODEL_PATH = "/GNN/models/best_model_binary.pt"
     PROCESSED_DATA_DIR = "/processed_data"
 
     # Kiểm tra files
