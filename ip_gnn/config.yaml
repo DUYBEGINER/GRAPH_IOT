@@ -1,5 +1,5 @@
 # Endpoint-based GNN Configuration
-# Node = endpoint (IP/IP:Port), Edge = flow, Task = edge classification
+# Node = endpoint (IP), Edge = flow, Task = edge classification
 
 project:
   name: "Endpoint-GNN"
@@ -30,7 +30,7 @@ model:
   aggr: "mean"  # mean or sum
 
 graph:
-  mapping_mode: "ip_port"  # ip_port or ip_only
+  mapping_mode: "ip_only"  # ip_port or ip_only
   
   anti_leakage:
     enabled: true  # Enable IP random mapping

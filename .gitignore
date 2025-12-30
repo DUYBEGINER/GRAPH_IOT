@@ -49,10 +49,6 @@ env/
 checkpoints/
 lightning_logs/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
-
 # IDE
 .vscode/
 .idea/
