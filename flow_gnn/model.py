@@ -10,21 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 class FlowGraphSAGE(nn.Module):
-    """
-    GraphSAGE for network flow classification.
-    Node = flow, Edge = KNN similarity, Task = node classification
-    """
-    
-    def __init__(
-        self, 
-        in_dim: int, 
-        hidden_dim: int = 128, 
-        num_classes: int = 2, 
-        num_layers: int = 2,
-        dropout: float = 0.3
-    ):
+    """GraphSAGE model for flow classification."""    
+    def __init__(self, in_dim: int, hidden_dim: int = 128, num_classes: int = 2, num_layers: int = 2, dropout: float = 0.3):
         super().__init__()
-        
+
         self.num_layers = num_layers
         self.dropout = dropout
         
@@ -43,21 +32,21 @@ class FlowGraphSAGE(nn.Module):
         for _ in range(num_layers):
             self.bns.append(nn.BatchNorm1d(hidden_dim))
         
-        # Classifier
-        self.classifier = nn.Linear(hidden_dim, num_classes)
+        # Classifier - output 1 logit for binary classification
+        self.classifier = nn.Linear(hidden_dim, 1)
         
-        logger.info(f"FlowGraphSAGE: {in_dim}→{hidden_dim}x{num_layers}→{num_classes}")
+        logger.info(f"FlowGraphSAGE: {in_dim}→{hidden_dim}x{num_layers}→1 (binary)")
     
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        """Forward pass."""
+        """Forward pass. Returns logits (no sigmoid)."""
         for i, conv in enumerate(self.convs):
             x = conv(x, edge_index)
             x = self.bns[i](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
-        x = self.classifier(x)
-        return x
+        x = self.classifier(x)  # Shape: [N, 1]
+        return x.squeeze(-1)  # Shape: [N]
     
     def get_embeddings(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """Get node embeddings before classification."""

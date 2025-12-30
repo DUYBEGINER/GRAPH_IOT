@@ -90,15 +90,15 @@ class EGraphSAGE(nn.Module):
         for _ in range(num_layers):
             self.bns.append(nn.BatchNorm1d(hidden_dim))
         
-        # Edge classifier
+        # Edge classifier - output 1 logit for binary classification
         self.edge_classifier = nn.Sequential(
             nn.Linear(2 * hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes)
+            nn.Linear(hidden_dim, 1)
         )
         
-        logger.info(f"E-GraphSAGE: {in_dim}→{hidden_dim}x{num_layers}→{num_classes} (edge)")
+        logger.info(f"E-GraphSAGE: {in_dim}→{hidden_dim}x{num_layers}→1 (edge binary)")
     
     def forward(
         self, 
@@ -137,7 +137,7 @@ class EGraphSAGE(nn.Module):
         # Concatenate embeddings
         edge_emb = torch.cat([src_emb, dst_emb], dim=1)
         
-        # Classify edges
+        # Classify edges (returns logits, no sigmoid)
         edge_logits = self.edge_classifier(edge_emb)
         
-        return edge_logits
+        return edge_logits.squeeze(-1)  # Shape: [num_target_edges]

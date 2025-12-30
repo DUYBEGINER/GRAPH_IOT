@@ -33,6 +33,7 @@ def run_flow_gnn(args):
     import yaml
     import pandas as pd
     import torch
+    import numpy as np
     from sklearn.preprocessing import StandardScaler
     
     from preprocess import load_cicids_csv, split_and_scale, set_seed
@@ -44,8 +45,6 @@ def run_flow_gnn(args):
         config = yaml.safe_load(f)
     
     # Override with CLI args
-    if args.csv:
-        config['data'] = {'csv_path': args.csv, 'max_samples': args.max_samples or 200000}
     if args.device:
         config['project']['device'] = args.device
     
@@ -56,47 +55,46 @@ def run_flow_gnn(args):
     logger.info("FLOW-BASED GNN PIPELINE")
     logger.info("=" * 70)
     
-    # 1. Load data
-    logger.info("\n[1/5] Loading CSV data...")
-    csv_path = config.get('data', {}).get('csv_path') or args.csv
-    X, y, feature_cols = load_cicids_csv(
-        csv_path=csv_path,
-        max_samples=config.get('data', {}).get('max_samples'),
-        seed=config['project']['seed']
-    )
+    # Load preprocessed data from dataset-processed folder
+    data_dir = Path("dataset-processed")
     
-    # 2. Split and scale
-    logger.info("\n[2/5] Splitting and scaling...")
-    preprocess_config = yaml.safe_load(open("preprocess/config.yaml"))
-    x_tensor, y_tensor, idx_train, idx_val, idx_test, scaler = split_and_scale(
-        X, y,
-        val_ratio=preprocess_config['data']['val_split'],
-        test_ratio=preprocess_config['data']['test_split'],
-        seed=config['project']['seed']
-    )
+    # 1. Load preprocessed data
+    logger.info("\n[1/4] Loading preprocessed data...")
+    logger.info(f"   Loading from: {data_dir}")
     
-    # 3. Build KNN graph
-    logger.info("\n[3/5] Building KNN graph...")
-    edge_index, edge_weight = build_knn_graph(
+    x_tensor = torch.tensor(np.load(data_dir / "X.npy"), dtype=torch.float)
+    y_tensor = torch.tensor(np.load(data_dir / "y.npy"), dtype=torch.long)
+    idx_train = np.load(data_dir / "idx_train.npy")
+    idx_val = np.load(data_dir / "idx_val.npy")
+    idx_test = np.load(data_dir / "idx_test.npy")
+    
+    logger.info(f"   X shape: {x_tensor.shape}")
+    logger.info(f"   y shape: {y_tensor.shape}")
+    logger.info(f"   Train samples: {len(idx_train):,}")
+    logger.info(f"   Val samples: {len(idx_val):,}")
+    logger.info(f"   Test samples: {len(idx_test):,}")
+    
+    # 2. Build KNN graph on FULL dataset
+    logger.info("\n[2/4] Building KNN graph on full dataset...")
+    edge_index = build_knn_graph(
         x_tensor.numpy(),
-        k=config['graph']['k_neighbors'],
-        metric=config['graph']['metric']
+        k=config['graph']['k_neighbors']
     )
     
-    # 4. Create masks
-    logger.info("\n[4/5] Creating train/val/test masks...")
-    train_mask = torch.zeros(len(y), dtype=torch.bool)
-    val_mask = torch.zeros(len(y), dtype=torch.bool)
-    test_mask = torch.zeros(len(y), dtype=torch.bool)
+    # 3. Create masks
+    logger.info("\n[3/4] Creating train/val/test masks...")
+    train_mask = torch.zeros(len(y_tensor), dtype=torch.bool)
+    val_mask = torch.zeros(len(y_tensor), dtype=torch.bool)
+    test_mask = torch.zeros(len(y_tensor), dtype=torch.bool)
     train_mask[idx_train] = True
     val_mask[idx_val] = True
     test_mask[idx_test] = True
     
-    # 5. Train
-    logger.info("\n[5/5] Training model...")
+    # 4. Train
+    logger.info("\n[4/4] Training model...")
     test_metrics = train_flow_gnn(
         x_tensor, y_tensor,
-        edge_index, edge_weight,
+        edge_index,
         train_mask, val_mask, test_mask,
         config, device
     )

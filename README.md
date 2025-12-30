@@ -116,9 +116,24 @@ python main.py flow --csv data/Tuesday_20_02_exist_ip.csv
 python main.py flow \
   --csv data/Tuesday_20_02_exist_ip.csv \
   --config flow_gnn/config.yaml \
-  --max-samples 200000 \
+  --max-samples 3000000 \
   --device auto
 ```
+
+**Giới hạn số lượng records**: 
+- Để giới hạn dataset xuống 2-3 triệu records cho training nhanh hơn, sử dụng option `--max-samples`:
+  ```bash
+  # Limit 2 triệu records
+  python main.py flow --csv data.csv --max-samples 2000000
+  
+  # Limit 3 triệu records  
+  python main.py flow --csv data.csv --max-samples 3000000
+  ```
+- Hoặc chỉnh trong `flow_gnn/config.yaml`:
+  ```yaml
+  data:
+    max_samples: 3000000  # 3M records
+  ```
 
 ### 2. Train Endpoint-based GNN
 
@@ -162,6 +177,9 @@ project:
 
 ### flow_gnn/config.yaml
 ```yaml
+data:
+  max_samples: 3000000  # Limit dataset (2M-3M recommended for fast training, null = use all)
+
 model:
   hidden_dim: 128
   num_classes: 2
@@ -170,7 +188,6 @@ model:
 
 graph:
   k_neighbors: 10
-  metric: "cosine"
 
 training:
   epochs: 100

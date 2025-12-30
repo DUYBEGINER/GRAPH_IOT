@@ -3,12 +3,14 @@
 import json
 import logging
 import pickle
+import time
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Tuple, Any
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -32,34 +34,64 @@ def make_split_manifest(
     Returns:
         Manifest dictionary with split statistics
     """
+    start_time = time.time()
+    
     cleaned_path = Path(cleaned_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    logger.info("="*80)
-    logger.info("SPLIT AND SCALE PROCESS")
-    logger.info("="*80)
-    logger.info(f"Mode: {config['mode']}")
-    logger.info(f"Split mode: {config['split']['split_mode']}")
-    logger.info(f"Ratios - Val: {config['split']['val_ratio']}, Test: {config['split']['test_ratio']}")
-    logger.info(f"Seed: {config['split']['seed']}")
+    logger.info("=" * 100)
+    logger.info("🚀 SPLIT AND SCALE PROCESS")
+    logger.info("=" * 100)
+    logger.info(f"🎯 Mode:          {config['mode']}")
+    logger.info(f"✂️  Split mode:    {config['split']['split_mode']}")
+    logger.info(f"📊 Val ratio:     {config['split']['val_ratio']}")
+    logger.info(f"📊 Test ratio:    {config['split']['test_ratio']}")
+    logger.info(f"🎲 Random seed:   {config['split']['seed']}")
+    logger.info("=" * 100)
     
     # Load all cleaned files
-    logger.info("\nLoading cleaned data...")
+    logger.info("\n📂 Loading cleaned data...")
     df_all = load_cleaned_data(cleaned_path)
     
-    logger.info(f"Total rows: {len(df_all):,}")
-    logger.info(f"Columns: {list(df_all.columns)}")
+    logger.info(f"✅ Total rows loaded: {len(df_all):,}")
+    logger.info(f"📋 Total columns: {len(df_all.columns)}")
+    
+    # Store original labels if multi-class is enabled
+    original_labels = None
+    if config['labels'].get('save_original', False):
+        label_col = find_original_label_column(df_all)
+        if label_col:
+            original_labels = df_all[label_col].copy()
+            logger.info(f"💾 Saving original labels from column: {label_col}")
     
     # Extract features and labels
     special_cols = config['cleaning'].get('keep_cols_ip_mode', [])
-    feature_cols = [c for c in df_all.columns if c not in ["Label"] + special_cols]
+    exclude_cols = ["Label", "source_file"] + special_cols
+    feature_cols = [c for c in df_all.columns if c not in exclude_cols]
     
-    logger.info(f"Feature columns: {len(feature_cols)}")
-    logger.info(f"Special columns: {special_cols}")
+    logger.info(f"🔢 Feature columns: {len(feature_cols)}")
+    if special_cols:
+        logger.info(f"⚙️  Special columns: {special_cols}")
     
     X = df_all[feature_cols].values.astype(np.float32)
     y = df_all["Label"].values.astype(np.int64)
+    
+    # Variance filtering (remove constant features)
+    if config['labels'].get('variance_filtering', False):
+        logger.info("\n🔍 Applying variance filtering...")
+        variances = X.var(axis=0)
+        variance_threshold = config['labels'].get('variance_threshold', 0.0)
+        valid_features = variances > variance_threshold
+        
+        n_removed = (~valid_features).sum()
+        if n_removed > 0:
+            logger.info(f"🗑️  Removing {n_removed} features with variance <= {variance_threshold}")
+            X = X[:, valid_features]
+            feature_cols = [feature_cols[i] for i in range(len(feature_cols)) if valid_features[i]]
+            logger.info(f"✅ Remaining features: {len(feature_cols)}")
+        else:
+            logger.info(f"✅ All features have sufficient variance")
     
     # Get timestamps if available (for time split)
     timestamps = None
@@ -67,7 +99,7 @@ def make_split_manifest(
         timestamps = pd.to_datetime(df_all["Timestamp"], errors='coerce')
     
     # Perform split
-    logger.info("\nPerforming data split...")
+    logger.info(f"\n✂️  Performing {config['split']['split_mode']} split...")
     
     if config['split']['split_mode'] == "time" and timestamps is not None:
         idx_train, idx_val, idx_test = time_based_split(
@@ -84,53 +116,83 @@ def make_split_manifest(
             config['split']['seed']
         )
     
-    logger.info(f"Train: {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
-    logger.info(f"Val: {len(idx_val):,} ({len(idx_val)/len(y)*100:.1f}%)")
-    logger.info(f"Test: {len(idx_test):,} ({len(idx_test)/len(y)*100:.1f}%)")
+    logger.info(f"📊 Train: {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    logger.info(f"📊 Val:   {len(idx_val):,} ({len(idx_val)/len(y)*100:.1f}%)")
+    logger.info(f"📊 Test:  {len(idx_test):,} ({len(idx_test)/len(y)*100:.1f}%)")
     
     # Class distribution
-    logger.info("\nClass distribution:")
-    logger.info(f"Train - Benign: {(y[idx_train]==0).sum():,}, Attack: {(y[idx_train]==1).sum():,}")
-    logger.info(f"Val   - Benign: {(y[idx_val]==0).sum():,}, Attack: {(y[idx_val]==1).sum():,}")
-    logger.info(f"Test  - Benign: {(y[idx_test]==0).sum():,}, Attack: {(y[idx_test]==1).sum():,}")
+    logger.info("\n📈 Class distribution:")
+    logger.info(f"   Train - Benign: {(y[idx_train]==0).sum():>7,} | Attack: {(y[idx_train]==1).sum():>7,}")
+    logger.info(f"   Val   - Benign: {(y[idx_val]==0).sum():>7,} | Attack: {(y[idx_val]==1).sum():>7,}")
+    logger.info(f"   Test  - Benign: {(y[idx_test]==0).sum():>7,} | Attack: {(y[idx_test]==1).sum():>7,}")
     
     # Fit scaler on training data
-    logger.info("\nFitting StandardScaler on training data...")
+    logger.info("\n⚙️  Fitting StandardScaler on training data...")
     scaler = StandardScaler()
     X_train = X[idx_train]
     scaler.fit(X_train)
     
     # Transform all data
-    logger.info("Transforming all data...")
+    logger.info("⚙️  Transforming all data with fitted scaler...")
     X_scaled = scaler.transform(X)
     
-    logger.info(f"Scaled range: [{X_scaled.min():.3f}, {X_scaled.max():.3f}]")
-    logger.info(f"Scaled mean: {X_scaled.mean():.3f}, std: {X_scaled.std():.3f}")
+    logger.info(f"   Scaled range: [{X_scaled.min():.3f}, {X_scaled.max():.3f}]")
+    logger.info(f"   Scaled mean: {X_scaled.mean():.3f}, std: {X_scaled.std():.3f}")
     
     # Save data
-    logger.info("\nSaving processed data...")
+    logger.info("\n💾 Saving processed data...")
     
-    # Save features and labels
+    files_saved = []
+    
+    # Save features and binary labels
     np.save(output_path / "X.npy", X_scaled)
     np.save(output_path / "y.npy", y)
+    files_saved.extend(["X.npy", "y.npy"])
+    logger.info("   ✅ Saved X.npy and y.npy (binary labels)")
+    
+    # Save multi-class labels if enabled
+    if config['labels'].get('save_multiclass', False) and original_labels is not None:
+        label_encoder = LabelEncoder()
+        y_multi = label_encoder.fit_transform(original_labels)
+        np.save(output_path / "y_multi.npy", y_multi)
+        files_saved.append("y_multi.npy")
+        
+        # Save label encoder classes
+        label_classes = {"classes": label_encoder.classes_.tolist()}
+        with open(output_path / "label_classes.json", 'w') as f:
+            json.dump(label_classes, f, indent=2)
+        files_saved.append("label_classes.json")
+        
+        logger.info(f"   ✅ Saved y_multi.npy with {len(label_encoder.classes_)} classes")
+        logger.info(f"   📋 Classes: {label_encoder.classes_.tolist()}")
     
     # Save indices
     np.save(output_path / "idx_train.npy", idx_train)
     np.save(output_path / "idx_val.npy", idx_val)
     np.save(output_path / "idx_test.npy", idx_test)
+    files_saved.extend(["idx_train.npy", "idx_val.npy", "idx_test.npy"])
+    logger.info("   ✅ Saved train/val/test indices")
     
     # Save scaler
     with open(output_path / "scaler.pkl", 'wb') as f:
         pickle.dump(scaler, f)
+    files_saved.append("scaler.pkl")
+    logger.info("   ✅ Saved StandardScaler")
     
     # Save feature names
     feature_names = {"features": feature_cols, "num_features": len(feature_cols)}
     with open(output_path / "feature_names.json", 'w') as f:
         json.dump(feature_names, f, indent=2)
+    files_saved.append("feature_names.json")
+    logger.info("   ✅ Saved feature names")
     
     # Save IP data if in ip_gnn mode
     if config['mode'] == "ip_gnn":
         save_ip_data(df_all, special_cols, output_path)
+        files_saved.append("ip_data.npz")
+    
+    # Calculate processing time
+    processing_time = time.time() - start_time
     
     # Create manifest
     manifest = {
@@ -139,19 +201,21 @@ def make_split_manifest(
         "seed": config['split']['seed'],
         "total_samples": len(y),
         "num_features": len(feature_cols),
+        "variance_filtering_applied": config['labels'].get('variance_filtering', False),
+        "processing_time": processing_time,
         "splits": {
             "train": {
-                "size": len(idx_train),
+                "size": int(len(idx_train)),
                 "benign": int((y[idx_train]==0).sum()),
                 "attack": int((y[idx_train]==1).sum())
             },
             "val": {
-                "size": len(idx_val),
+                "size": int(len(idx_val)),
                 "benign": int((y[idx_val]==0).sum()),
                 "attack": int((y[idx_val]==1).sum())
             },
             "test": {
-                "size": len(idx_test),
+                "size": int(len(idx_test)),
                 "benign": int((y[idx_test]==0).sum()),
                 "attack": int((y[idx_test]==1).sum())
             }
@@ -160,24 +224,26 @@ def make_split_manifest(
             "mean": scaler.mean_.tolist(),
             "scale": scaler.scale_.tolist()
         },
-        "files_saved": [
-            "X.npy",
-            "y.npy",
-            "idx_train.npy",
-            "idx_val.npy",
-            "idx_test.npy",
-            "scaler.pkl",
-            "feature_names.json",
-            "manifest.json"
-        ]
+        "files_saved": files_saved
     }
+    
+    # Add multi-class info if available
+    if config['labels'].get('save_multiclass', False) and original_labels is not None:
+        manifest["multiclass_enabled"] = True
+        manifest["num_classes"] = len(label_encoder.classes_)
     
     # Save manifest
     with open(output_path / "manifest.json", 'w') as f:
         json.dump(manifest, f, indent=2)
+    files_saved.append("manifest.json")
     
-    logger.info(f"\n✓ All files saved to: {output_path}")
-    logger.info("="*80 + "\n")
+    logger.info(f"\n{'='*100}")
+    logger.info("✅ SPLIT AND SCALE COMPLETED")
+    logger.info(f"{'='*100}")
+    logger.info(f"⏱️  Processing time: {processing_time:.2f}s")
+    logger.info(f"📁 Output directory: {output_path}")
+    logger.info(f"📦 Files saved: {len(files_saved)}")
+    logger.info(f"{'='*100}\n")
     
     return manifest
 
@@ -195,8 +261,7 @@ def load_cleaned_data(cleaned_dir: Path) -> pd.DataFrame:
         raise ValueError(f"No cleaned files found in {cleaned_dir}")
     
     dfs = []
-    for file in files:
-        logger.info(f"  Loading {file.name}...")
+    for file in tqdm(files, desc="Loading files", unit="file"):
         if file.suffix == ".parquet":
             df = pd.read_parquet(file)
         else:
@@ -291,7 +356,7 @@ def time_based_split(
 def save_ip_data(df: pd.DataFrame, special_cols: list, output_path: Path):
     """Save IP and timestamp data for ip_gnn mode."""
     
-    logger.info("Saving IP data for ip_gnn mode...")
+    logger.info("   Saving IP data for ip_gnn mode...")
     
     ip_data = {}
     
@@ -302,7 +367,23 @@ def save_ip_data(df: pd.DataFrame, special_cols: list, output_path: Path):
     # Save as npz
     np.savez(output_path / "ip_data.npz", **ip_data)
     
-    logger.info(f"  Saved {len(ip_data)} special columns to ip_data.npz")
+    logger.info(f"   ✅ Saved {len(ip_data)} special columns to ip_data.npz")
+
+
+def find_original_label_column(df: pd.DataFrame) -> str:
+    """Find the original label column (before binary conversion)."""
+    # If we added source_file tracking, the original label might be preserved
+    # Otherwise, we need to look for alternative label columns
+    possible_names = ["original_label", "attack_type", "Label_orig", "Attack"]
+    
+    for name in possible_names:
+        if name in df.columns:
+            return name
+    
+    # If none found, check if we have the source_file column
+    # In this case, we need to reload from original CSVs
+    # For now, return None
+    return None
 
 
 if __name__ == "__main__":

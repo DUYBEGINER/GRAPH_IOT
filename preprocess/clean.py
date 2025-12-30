@@ -2,10 +2,12 @@
 
 import json
 import logging
+import time
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,6 +31,8 @@ def clean_all(
     Returns:
         Dictionary containing cleaning metadata
     """
+    start_time = time.time()
+    
     input_path = Path(input_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -42,9 +46,16 @@ def clean_all(
     if not csv_files:
         raise ValueError(f"No CSV files found in {input_dir}")
     
-    logger.info(f"Starting cleaning process for {len(csv_files)} files")
-    logger.info(f"Mode: {config['mode']}")
-    logger.info(f"Chunk size: {config['chunk_processing']['chunk_size']}")
+    logger.info("=" * 100)
+    logger.info("🚀 STARTING DATA CLEANING PROCESS")
+    logger.info("=" * 100)
+    logger.info(f"📁 Input:        {input_path.absolute()}")
+    logger.info(f"📁 Output:       {output_path.absolute()}")
+    logger.info(f"🎯 Mode:         {config['mode']}")
+    logger.info(f"📦 Files found:  {len(csv_files)}")
+    logger.info(f"🔧 Chunk size:   {config['chunk_processing']['chunk_size']:,} rows")
+    logger.info(f"💾 Format:       {output_format}")
+    logger.info("=" * 100)
     
     metadata = {
         "mode": config['mode'],
@@ -53,14 +64,17 @@ def clean_all(
         "files_processed": [],
         "total_rows_input": 0,
         "total_rows_output": 0,
-        "schema": None
+        "total_rows_dropped": 0,
+        "total_duplicates_removed": 0,
+        "schema": None,
+        "processing_time": 0
     }
     
-    # Process each file
-    for idx, csv_file in enumerate(csv_files, 1):
-        logger.info(f"\n{'='*80}")
-        logger.info(f"Processing [{idx}/{len(csv_files)}]: {csv_file.name}")
-        logger.info(f"{'='*80}")
+    # Process each file with progress bar
+    for idx, csv_file in enumerate(tqdm(csv_files, desc="Processing files", unit="file"), 1):
+        logger.info(f"\n{'='*100}")
+        logger.info(f"📄 File [{idx}/{len(csv_files)}]: {csv_file.name}")
+        logger.info(f"{'='*100}")
         
         file_metadata = clean_single_file(
             csv_file,
@@ -72,24 +86,30 @@ def clean_all(
         metadata["files_processed"].append(file_metadata)
         metadata["total_rows_input"] += file_metadata["rows_input"]
         metadata["total_rows_output"] += file_metadata["rows_output"]
+        metadata["total_duplicates_removed"] += file_metadata.get("duplicates_removed", 0)
         
         # Use schema from first file
         if metadata["schema"] is None and file_metadata.get("schema"):
             metadata["schema"] = file_metadata["schema"]
+    
+    metadata["total_rows_dropped"] = metadata["total_rows_input"] - metadata["total_rows_output"]
+    metadata["processing_time"] = time.time() - start_time
     
     # Save metadata
     schema_path = output_path / "schema.json"
     with open(schema_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    logger.info(f"\n{'='*80}")
-    logger.info("CLEANING SUMMARY")
-    logger.info(f"{'='*80}")
-    logger.info(f"Total rows input: {metadata['total_rows_input']:,}")
-    logger.info(f"Total rows output: {metadata['total_rows_output']:,}")
-    logger.info(f"Rows dropped: {metadata['total_rows_input'] - metadata['total_rows_output']:,}")
-    logger.info(f"Schema saved to: {schema_path}")
-    logger.info(f"{'='*80}\n")
+    logger.info(f"\n{'='*100}")
+    logger.info("✅ CLEANING SUMMARY")
+    logger.info(f"{'='*100}")
+    logger.info(f"📊 Total rows input:       {metadata['total_rows_input']:,}")
+    logger.info(f"✅ Total rows output:      {metadata['total_rows_output']:,}")
+    logger.info(f"❌ Rows dropped:           {metadata['total_rows_dropped']:,} ({metadata['total_rows_dropped']/metadata['total_rows_input']*100:.2f}%)")
+    logger.info(f"🗑️  Duplicates removed:    {metadata['total_duplicates_removed']:,}")
+    logger.info(f"⏱️  Processing time:       {metadata['processing_time']:.2f}s")
+    logger.info(f"📝 Schema saved to:       {schema_path}")
+    logger.info(f"{'='*100}\n")
     
     return metadata
 
@@ -112,6 +132,8 @@ def clean_single_file(
     Returns:
         File processing metadata
     """
+    file_start_time = time.time()
+    
     # Output filename
     output_name = csv_path.stem + f"_cleaned.{output_format}"
     output_path = output_dir / output_name
@@ -122,6 +144,8 @@ def clean_single_file(
         "rows_input": 0,
         "rows_output": 0,
         "rows_dropped": 0,
+        "duplicates_removed": 0,
+        "processing_time": 0,
         "schema": None
     }
     
@@ -131,63 +155,82 @@ def clean_single_file(
     try:
         chunk_iter = pd.read_csv(csv_path, chunksize=config['chunk_processing']['chunk_size'], low_memory=False)
         
-        for chunk_idx, chunk in enumerate(chunk_iter):
-            logger.info(f"  Processing chunk {chunk_idx + 1} ({len(chunk)} rows)...")
-            
-            file_metadata["rows_input"] += len(chunk)
-            
-            # Clean chunk
-            cleaned_chunk = clean_chunk(chunk, config)
-            
-            if cleaned_chunk is not None and len(cleaned_chunk) > 0:
-                chunks_processed.append(cleaned_chunk)
-                file_metadata["rows_output"] += len(cleaned_chunk)
+        # Use tqdm for progress bar
+        with tqdm(desc=f"  Processing chunks", unit="chunk") as pbar:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                file_metadata["rows_input"] += len(chunk)
                 
-                # Save schema from first chunk
-                if file_metadata["schema"] is None:
-                    file_metadata["schema"] = extract_schema(cleaned_chunk, config)
+                # Clean chunk
+                cleaned_chunk = clean_chunk(chunk, config, csv_path.name)
+                
+                if cleaned_chunk is not None and len(cleaned_chunk) > 0:
+                    chunks_processed.append(cleaned_chunk)
+                    file_metadata["rows_output"] += len(cleaned_chunk)
+                    
+                    # Save schema from first chunk
+                    if file_metadata["schema"] is None:
+                        file_metadata["schema"] = extract_schema(cleaned_chunk, config)
+                
+                pbar.update(1)
+                pbar.set_postfix({"rows": file_metadata["rows_input"], "kept": file_metadata["rows_output"]})
         
         # Combine and save all chunks
         if chunks_processed:
             df_cleaned = pd.concat(chunks_processed, ignore_index=True)
             
-            logger.info(f"  Saving {len(df_cleaned)} rows to {output_path}...")
+            # Remove duplicates if enabled
+            if config['cleaning'].get('remove_duplicates', False):
+                original_len = len(df_cleaned)
+                df_cleaned = df_cleaned.drop_duplicates()
+                duplicates_removed = original_len - len(df_cleaned)
+                file_metadata["duplicates_removed"] = duplicates_removed
+                file_metadata["rows_output"] = len(df_cleaned)
+                
+                if duplicates_removed > 0:
+                    logger.info(f"  🗑️  Removed {duplicates_removed:,} duplicate rows")
+            
+            logger.info(f"  💾 Saving {len(df_cleaned):,} rows to {output_name}...")
             
             if output_format == "parquet":
                 df_cleaned.to_parquet(output_path, index=False)
             else:
                 df_cleaned.to_csv(output_path, index=False)
             
-            logger.info(f"  ✓ Saved: {len(df_cleaned):,} rows")
+            logger.info(f"  ✅ Saved: {len(df_cleaned):,} rows")
         else:
-            logger.warning(f"  ✗ No data remaining after cleaning!")
+            logger.warning(f"  ⚠️  No data remaining after cleaning!")
         
         file_metadata["rows_dropped"] = file_metadata["rows_input"] - file_metadata["rows_output"]
+        file_metadata["processing_time"] = time.time() - file_start_time
+        
+        logger.info(f"  ⏱️  File processing time: {file_metadata['processing_time']:.2f}s")
         
     except Exception as e:
-        logger.error(f"  Error processing {csv_path.name}: {e}")
+        logger.error(f"  ❌ Error processing {csv_path.name}: {e}")
         file_metadata["error"] = str(e)
     
     return file_metadata
 
 
-def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.DataFrame]:
+def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any], source_filename: str = None) -> Optional[pd.DataFrame]:
     """
     Clean a single chunk of data.
     
     Steps:
     1. Normalize column names
     2. Create binary label
-    3. Convert numeric columns (handle Infinity)
-    4. Handle inf/nan
-    5. Drop rows with too many missing
-    6. Impute remaining missing
-    7. Clip outliers
-    8. Keep/drop columns based on mode
+    3. Add source file tracking (optional)
+    4. Convert numeric columns (handle Infinity)
+    5. Handle inf/nan
+    6. Drop rows with too many missing
+    7. Impute remaining missing
+    8. Clip outliers
+    9. Keep/drop columns based on mode
     
     Args:
         chunk: Input dataframe chunk
         config: Configuration dictionary
+        source_filename: Name of source file (for tracking)
         
     Returns:
         Cleaned dataframe or None if empty
@@ -211,7 +254,11 @@ def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.Data
         logger.warning("  No label column found, creating dummy labels")
         df["Label"] = 0
     
-    # 3. Identify columns to keep/drop based on mode
+    # 3. Add source file tracking (if enabled)
+    if config['cleaning'].get('add_source_column', False) and source_filename:
+        df['source_file'] = source_filename
+    
+    # 4. Identify columns to keep/drop based on mode
     keep_cols = config['cleaning'].get('keep_cols_ip_mode', [])
     drop_cols = config['cleaning']['drop_cols_common']
     
@@ -227,10 +274,10 @@ def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.Data
     if cols_to_drop:
         df = df.drop(columns=cols_to_drop)
     
-    # 4. Convert numeric columns robustly
+    # 5. Convert numeric columns robustly
     numeric_cols = []
     for col in df.columns:
-        if col == "Label" or col in special_cols:
+        if col in ["Label", "source_file"] or col in special_cols:
             continue
         
         df[col] = convert_to_numeric_robust(df[col])
@@ -238,10 +285,10 @@ def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.Data
         if df[col].dtype in [np.float32, np.float64, np.int32, np.int64]:
             numeric_cols.append(col)
     
-    # 5. Handle inf → nan
+    # 6. Handle inf → nan
     df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
     
-    # 6. Drop rows with too many missing values
+    # 7. Drop rows with too many missing values
     if config['cleaning']['missing_threshold'] > 0:
         missing_ratio = df[numeric_cols].isnull().sum(axis=1) / len(numeric_cols)
         valid_rows = missing_ratio <= config['cleaning']['missing_threshold']
@@ -250,7 +297,7 @@ def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.Data
     if len(df) == 0:
         return None
     
-    # 7. Impute remaining missing values
+    # 8. Impute remaining missing values
     impute_strategy = config['cleaning']['impute_strategy']
     if impute_strategy == "median":
         df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
@@ -262,7 +309,7 @@ def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.Data
     # Handle any remaining NaNs (e.g., if entire column is NaN)
     df[numeric_cols] = df[numeric_cols].fillna(0)
     
-    # 8. Clip outliers (optional)
+    # 9. Clip outliers (optional)
     clip_quantiles = config['cleaning'].get('clip_quantiles')
     if clip_quantiles:
         lower_q, upper_q = clip_quantiles
@@ -271,13 +318,18 @@ def clean_chunk(chunk: pd.DataFrame, config: Dict[str, Any]) -> Optional[pd.Data
             upper = df[col].quantile(upper_q)
             df[col] = df[col].clip(lower, upper)
     
-    # 9. Restore special columns for ip_gnn mode
+    # 10. Restore special columns for ip_gnn mode
     for col, values in special_cols.items():
         df[col] = values
     
-    # 10. Final column ordering: features + Label + special cols
-    feature_cols = [c for c in df.columns if c not in ["Label"] and c not in special_cols]
-    ordered_cols = feature_cols + ["Label"] + list(special_cols.keys())
+    # 11. Final column ordering: features + Label + special cols + source_file
+    feature_cols = [c for c in df.columns if c not in ["Label", "source_file"] and c not in special_cols]
+    ordered_cols = feature_cols + ["Label"]
+    
+    if config['cleaning'].get('add_source_column', False) and 'source_file' in df.columns:
+        ordered_cols.append('source_file')
+    
+    ordered_cols += list(special_cols.keys())
     df = df[ordered_cols]
     
     return df

@@ -23,18 +23,37 @@ cleaning:
   impute_strategy: median  # median | mean | zero
   clip_quantiles: [0.01, 0.99]  # Clip outliers (null to disable)
   
+  # New features from merge_cicids2018.py
+  add_source_column: false  # Track which CSV file each row came from
+  
+  # New feature from preprocess_data.py
+  remove_duplicates: true  # Remove duplicate rows after cleaning
+  
   # Common columns to drop (metadata, redundant)
   drop_cols_common:
     - Flow_ID
-    - Src_Port
-    - Dst_Port
+    - Src Port
+    - Dst Port
     - Timestamp
   
   # Columns to keep for IP mode (in addition to features)
   keep_cols_ip_mode:
-    - Src_IP
-    - Dst_IP
+    - Src IP
+    - Dst IP
     - Timestamp
+
+# Label configuration
+labels:
+  # Binary labels (always created)
+  save_binary: true  # 0=Benign, 1=Attack
+  
+  # New features from preprocess_data.py
+  save_multiclass: false  # Save multi-class labels (LabelEncoder)
+  save_original: false  # Save original attack type labels
+  
+  # New feature: variance filtering
+  variance_filtering: true  # Remove features with zero/low variance
+  variance_threshold: 0.0  # Minimum variance to keep feature
 
 # Train/val/test split configuration
 split:
@@ -55,4 +74,3 @@ graph:
     - sum
     - max
     - min
-

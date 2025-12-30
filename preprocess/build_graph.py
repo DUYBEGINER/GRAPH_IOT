@@ -106,20 +106,28 @@ def build_flow_gnn_graph(
     x = torch.tensor(X, dtype=torch.float)
     y_tensor = torch.tensor(y, dtype=torch.long)
     
-    # Build KNN graph
+    # Build KNN graph ONLY on training set to prevent data leakage
     knn_k = config['graph']['knn_k']
     knn_metric = config['graph']['knn_metric']
-    logger.info(f"Building KNN graph with k={knn_k}...")
+    logger.info(f"Building KNN graph ONLY on training set with k={knn_k}...")
+    logger.info(f"This prevents information leakage from val/test sets")
+    
+    # Extract training features only
+    x_train = x[idx_train]
     
     # Use cosine similarity if specified, otherwise euclidean
     if knn_metric == "cosine":
         # Normalize features for cosine similarity
-        x_norm = x / (x.norm(dim=1, keepdim=True) + 1e-8)
-        edge_index = knn_graph(x_norm, k=knn_k, loop=False)
+        x_train_norm = x_train / (x_train.norm(dim=1, keepdim=True) + 1e-8)
+        edge_index_train = knn_graph(x_train_norm, k=knn_k, loop=False)
     else:
-        edge_index = knn_graph(x, k=knn_k, loop=False)
+        edge_index_train = knn_graph(x_train, k=knn_k, loop=False)
     
-    logger.info(f"Edges created: {edge_index.shape[1]:,}")
+    # Map edges back to original node indices
+    edge_index = idx_train[edge_index_train]
+    
+    logger.info(f"Edges created on training set: {edge_index.shape[1]:,}")
+    logger.info(f"Val/test nodes are isolated (no edges) to prevent leakage")
     
     # Create masks
     num_nodes = len(y)
