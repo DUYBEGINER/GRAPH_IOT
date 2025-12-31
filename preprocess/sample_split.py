@@ -3,7 +3,7 @@ Sample and split data from cleaned files
 - Tự động xử lý cả Flow-GNN và IP-GNN
 - Flow-GNN: Load 8 files, no IP columns
 - IP-GNN: Load 1 file (20-02-2018), keep IP columns
-- Sample 2M records randomly
+- SMART SAMPLING: Lấy TẤT CẢ attack trước, rồi sample benign theo tỉ lệ
 - Split 70% train, 10% val, 20% test
 """
 import json
@@ -14,6 +14,71 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import config as cfg
+
+
+def smart_sample(df, sample_size, target_attack_ratio, seed=42):
+    """
+    Smart sampling strategy:
+    1. Lấy TẤT CẢ attack samples từ dataset gốc (maximize attack)
+    2. Sample benign theo tỉ lệ mong muốn
+    
+    Returns: sampled DataFrame
+    """
+    np.random.seed(seed)
+    
+    # Tách attack và benign
+    df_attack = df[df["Label"] == 1]
+    df_benign = df[df["Label"] == 0]
+    
+    n_attack_total = len(df_attack)
+    n_benign_total = len(df_benign)
+    
+    print(f"\n  Original dataset:")
+    print(f"    Attack: {n_attack_total:,} ({n_attack_total / len(df) * 100:.1f}%)")
+    print(f"    Benign: {n_benign_total:,} ({n_benign_total / len(df) * 100:.1f}%)")
+    
+    # Tính số lượng cần lấy để đạt target ratio với sample_size
+    # Nếu lấy đủ attack: n_attack = sample_size * target_attack_ratio
+    n_attack_target = int(sample_size * target_attack_ratio)
+    n_benign_target = sample_size - n_attack_target
+    
+    # Nếu không đủ attack, lấy tất cả attack và điều chỉnh benign
+    if n_attack_total < n_attack_target:
+        n_attack_use = n_attack_total  # Lấy tất cả attack
+        # Tính benign để đạt target ratio
+        n_benign_use = int(n_attack_use * (1 - target_attack_ratio) / target_attack_ratio)
+        n_benign_use = min(n_benign_use, n_benign_total)
+        print(f"\n  Not enough attack samples for target ratio.")
+        print(f"  Using ALL {n_attack_use:,} attack samples.")
+    else:
+        n_attack_use = n_attack_target
+        n_benign_use = n_benign_target
+        print(f"\n  Enough attack samples available.")
+    
+    # Sample
+    if n_attack_use < n_attack_total:
+        df_attack_sampled = df_attack.sample(n=n_attack_use, random_state=seed)
+    else:
+        df_attack_sampled = df_attack
+    
+    if n_benign_use < n_benign_total:
+        df_benign_sampled = df_benign.sample(n=n_benign_use, random_state=seed)
+    else:
+        df_benign_sampled = df_benign
+    
+    # Combine và shuffle
+    df_sampled = pd.concat([df_attack_sampled, df_benign_sampled], ignore_index=True)
+    df_sampled = df_sampled.sample(frac=1, random_state=seed).reset_index(drop=True)
+    
+    actual_attack_ratio = len(df_attack_sampled) / len(df_sampled)
+    
+    print(f"\n  Sampled dataset:")
+    print(f"    Total: {len(df_sampled):,}")
+    print(f"    Attack: {len(df_attack_sampled):,} ({actual_attack_ratio * 100:.1f}%)")
+    print(f"    Benign: {len(df_benign_sampled):,} ({(1 - actual_attack_ratio) * 100:.1f}%)")
+    print(f"    Target ratio was: {target_attack_ratio * 100:.1f}%")
+    
+    return df_sampled
 
 
 def process_flow_gnn(cleaned_dir=None, output_dir=None):
@@ -44,12 +109,9 @@ def process_flow_gnn(cleaned_dir=None, output_dir=None):
     df_all = pd.concat(dfs, ignore_index=True)
     print(f"Total rows: {len(df_all):,}")
     
-    # Sample 2M records
-    if len(df_all) > cfg.SAMPLE_SIZE:
-        print(f"Sampling {cfg.SAMPLE_SIZE:,} records...")
-        df_all = df_all.sample(n=cfg.SAMPLE_SIZE, random_state=cfg.SEED).reset_index(drop=True)
-    else:
-        print(f"Using all {len(df_all):,} records")
+    # Smart sampling: maximize attack, then sample benign
+    print("\nSmart sampling (maximize attack samples)...")
+    df_all = smart_sample(df_all, cfg.SAMPLE_SIZE, cfg.TARGET_ATTACK_RATIO, cfg.SEED)
     
     # Separate features and labels
     feature_cols = [c for c in df_all.columns if c != "Label"]
@@ -61,8 +123,8 @@ def process_flow_gnn(cleaned_dir=None, output_dir=None):
     print(f"Benign: {(y == 0).sum():,} ({(y == 0).sum() / len(y) * 100:.1f}%)")
     print(f"Attack: {(y == 1).sum():,} ({(y == 1).sum() / len(y) * 100:.1f}%)")
     
-    # Split train/val/test
-    print("\nSplitting data...")
+    # Split train/val/test (stratified to keep ratio in all splits)
+    print("\nSplitting data (stratified)...")
     idx = np.arange(len(y))
     
     idx_train, idx_temp, y_train, y_temp = train_test_split(
@@ -80,32 +142,7 @@ def process_flow_gnn(cleaned_dir=None, output_dir=None):
         random_state=cfg.SEED
     )
     
-    print(f"Train (before undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
-    print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
-    print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
-    
-    # Undersample training set to achieve target attack ratio
-    idx_train_benign = idx_train[y[idx_train] == 0]
-    idx_train_attack = idx_train[y[idx_train] == 1]
-    
-    n_attack = len(idx_train_attack)
-    n_benign_target = int(n_attack * (1 - cfg.TARGET_ATTACK_RATIO) / cfg.TARGET_ATTACK_RATIO)
-    
-    if n_benign_target < len(idx_train_benign):
-        print(f"\nUndersampling benign samples in training set...")
-        print(f"  Target attack ratio: {cfg.TARGET_ATTACK_RATIO:.1%}")
-        print(f"  Attack samples: {n_attack:,}")
-        print(f"  Benign samples needed: {n_benign_target:,} (from {len(idx_train_benign):,})")
-        
-        np.random.seed(cfg.SEED)
-        idx_train_benign_sampled = np.random.choice(idx_train_benign, n_benign_target, replace=False)
-        idx_train = np.concatenate([idx_train_benign_sampled, idx_train_attack])
-        np.random.shuffle(idx_train)
-    else:
-        print(f"\nWarning: Not enough benign samples to achieve target ratio")
-        print(f"  Current attack ratio: {n_attack / len(idx_train):.1%}")
-    
-    print(f"\nTrain (after undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"\nTrain: {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
     print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
     print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
     print(f"Val:   {len(idx_val):,} ({len(idx_val)/len(y)*100:.1f}%)")
@@ -186,12 +223,9 @@ def process_ip_gnn(cleaned_dir=None, output_dir=None):
     df_all = pd.read_csv(file_path)
     print(f"Total rows: {len(df_all):,}")
     
-    # Sample 2M records
-    if len(df_all) > cfg.SAMPLE_SIZE:
-        print(f"Sampling {cfg.SAMPLE_SIZE:,} records...")
-        df_all = df_all.sample(n=cfg.SAMPLE_SIZE, random_state=cfg.SEED).reset_index(drop=True)
-    else:
-        print(f"Using all {len(df_all):,} records")
+    # Smart sampling: maximize attack, then sample benign
+    print("\nSmart sampling (maximize attack samples)...")
+    df_all = smart_sample(df_all, cfg.SAMPLE_SIZE, cfg.TARGET_ATTACK_RATIO, cfg.SEED)
     
     # Extract IP columns
     ip_cols = [c for c in cfg.IP_COLS if c in df_all.columns]
@@ -210,8 +244,8 @@ def process_ip_gnn(cleaned_dir=None, output_dir=None):
     print(f"Benign: {(y == 0).sum():,} ({(y == 0).sum() / len(y) * 100:.1f}%)")
     print(f"Attack: {(y == 1).sum():,} ({(y == 1).sum() / len(y) * 100:.1f}%)")
     
-    # Split train/val/test
-    print("\nSplitting data...")
+    # Split train/val/test (stratified to keep ratio in all splits)
+    print("\nSplitting data (stratified)...")
     idx = np.arange(len(y))
     
     idx_train, idx_temp, y_train, y_temp = train_test_split(
@@ -229,32 +263,7 @@ def process_ip_gnn(cleaned_dir=None, output_dir=None):
         random_state=cfg.SEED
     )
     
-    print(f"Train (before undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
-    print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
-    print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
-    
-    # Undersample training set to achieve target attack ratio
-    idx_train_benign = idx_train[y[idx_train] == 0]
-    idx_train_attack = idx_train[y[idx_train] == 1]
-    
-    n_attack = len(idx_train_attack)
-    n_benign_target = int(n_attack * (1 - cfg.TARGET_ATTACK_RATIO) / cfg.TARGET_ATTACK_RATIO)
-    
-    if n_benign_target < len(idx_train_benign):
-        print(f"\nUndersampling benign samples in training set...")
-        print(f"  Target attack ratio: {cfg.TARGET_ATTACK_RATIO:.1%}")
-        print(f"  Attack samples: {n_attack:,}")
-        print(f"  Benign samples needed: {n_benign_target:,} (from {len(idx_train_benign):,})")
-        
-        np.random.seed(cfg.SEED)
-        idx_train_benign_sampled = np.random.choice(idx_train_benign, n_benign_target, replace=False)
-        idx_train = np.concatenate([idx_train_benign_sampled, idx_train_attack])
-        np.random.shuffle(idx_train)
-    else:
-        print(f"\nWarning: Not enough benign samples to achieve target ratio")
-        print(f"  Current attack ratio: {n_attack / len(idx_train):.1%}")
-    
-    print(f"\nTrain (after undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"\nTrain: {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
     print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
     print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
     print(f"Val:   {len(idx_val):,} ({len(idx_val)/len(y)*100:.1f}%)")

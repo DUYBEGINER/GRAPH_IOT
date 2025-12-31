@@ -1,130 +1,205 @@
-"""Training logic for Endpoint-based GNN."""
+"""Training logic for IP-based GNN (E-GraphSAGE)."""
 
-import logging
 import torch
 import torch.nn as nn
-from torch_geometric.loader import LinkNeighborLoader
 from pathlib import Path
 from typing import Dict
 import numpy as np
 import time
-from sklearn.metrics import classification_report, f1_score, precision_score, recall_score
+from tqdm import tqdm
+from sklearn.metrics import f1_score
 
+from . import config as cfg
 from .model import EGraphSAGE
-from .utils import compute_metrics, EarlyStopping, get_device, save_metrics_plots, save_metrics_report
-
-logger = logging.getLogger(__name__)
+from .utils import compute_metrics, EarlyStopping, get_device, save_metrics_plots, save_metrics_report, set_seed
 
 
-def train_endpoint_gnn(
+class RandomEdgeSampler:
+    """Simple random edge sampler for mini-batch training on full graph."""
+    
+    def __init__(self, edge_indices: torch.Tensor, batch_size: int, shuffle: bool = True):
+        """
+        Args:
+            edge_indices: Indices of edges to sample from (1D tensor)
+            batch_size: Number of edges per batch
+            shuffle: Whether to shuffle edges each epoch
+        """
+        self.edge_indices = edge_indices
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        
+    def __iter__(self):
+        indices = self.edge_indices.clone()
+        if self.shuffle:
+            perm = torch.randperm(len(indices))
+            indices = indices[perm]
+        
+        for i in range(0, len(indices), self.batch_size):
+            yield indices[i:i + self.batch_size]
+    
+    def __len__(self):
+        return (len(self.edge_indices) + self.batch_size - 1) // self.batch_size
+
+
+def train_ip_gnn(
     data,
-    train_edges,
-    val_edges,
-    test_edges,
-    config: dict,
-    device: torch.device
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    test_idx: np.ndarray,
+    device: torch.device = None,
+    output_dir: str = None
 ) -> Dict:
-    """
-    Train Endpoint-based GNN model.
+    """Train IP-based GNN (E-GraphSAGE) model.
     
     Args:
         data: PyG Data with x, edge_index, edge_attr, edge_y
-        train_edges, val_edges, test_edges: Edge indices for each split
-        config: Configuration dict
-        device: Torch device
+        train_idx, val_idx, test_idx: Edge indices for each split (from preprocessing)
+        device: Torch device (default: auto-detect)
+        output_dir: Output directory (default from config)
         
     Returns:
-        Dictionary with final test metrics
+        Dictionary with test metrics
     """
-    logger.info("=" * 70)
-    logger.info("TRAINING ENDPOINT-BASED GNN")
-    logger.info("=" * 70)
+    # Setup
+    if device is None:
+        device = get_device(cfg.DEVICE)
+    if output_dir is None:
+        output_dir = cfg.OUTPUT_DIR
+    
+    set_seed(cfg.SEED)
+    
+    print("\n" + "=" * 70)
+    print("🚀 TRAINING IP-BASED GNN (E-GraphSAGE)")
+    print("=" * 70)
     
     # Move data to device
     data = data.to(device)
     
-    # Calculate pos_weight from TRAINING edges only
-    train_edge_y = data.edge_y[train_edges[0]]
+    # Convert indices to tensors
+    train_idx_t = torch.tensor(train_idx, dtype=torch.long, device=device)
+    val_idx_t = torch.tensor(val_idx, dtype=torch.long, device=device)
+    test_idx_t = torch.tensor(test_idx, dtype=torch.long, device=device)
+    
+    # Calculate pos_weight from training edges
+    train_edge_y = data.edge_y[train_idx_t]
     pos = (train_edge_y == 1).sum().item()
     neg = (train_edge_y == 0).sum().item()
     pos_weight = neg / pos if pos > 0 else 1.0
     
-    logger.info(f"Training edge distribution: Benign={neg}, Attack={pos}")
-    logger.info(f"Calculated pos_weight: {pos_weight:.4f}")
+    print(f"\n📊 Dataset Statistics:")
+    print(f"   Training edges:   {len(train_idx):,}")
+    print(f"   Validation edges: {len(val_idx):,}")
+    print(f"   Test edges:       {len(test_idx):,}")
+    print(f"   Class distribution: Benign={neg:,} ({neg/(neg+pos)*100:.1f}%), Attack={pos:,} ({pos/(neg+pos)*100:.1f}%)")
+    print(f"   Positive weight:    {pos_weight:.4f}")
     
     # Model
+    print(f"\n🏗️  Model Configuration:")
+    print(f"   Hidden dim:  {cfg.HIDDEN_DIM}")
+    print(f"   Num layers:  {cfg.NUM_LAYERS}")
+    print(f"   Dropout:     {cfg.DROPOUT}")
+    print(f"   Aggregation: {cfg.AGGR}")
+    
     model = EGraphSAGE(
         in_dim=data.x.shape[1],
-        hidden_dim=config['model']['hidden_dim'],
-        num_classes=config['model']['num_classes'],
-        num_layers=config['model']['num_layers'],
-        dropout=config['model']['dropout'],
-        aggr=config['model'].get('aggr', 'mean')
+        hidden_dim=cfg.HIDDEN_DIM,
+        num_classes=cfg.NUM_CLASSES,
+        num_layers=cfg.NUM_LAYERS,
+        dropout=cfg.DROPOUT,
+        aggr=cfg.AGGR
     ).to(device)
     
-    # Optimizer & Loss (BCEWithLogitsLoss with pos_weight)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"   Total params: {total_params:,}")
+    print(f"   Device:       {device}")
+    
+    # Optimizer & Loss
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=config['training']['learning_rate'],
-        weight_decay=config['training'].get('weight_decay', 0)
+        lr=cfg.LEARNING_RATE,
+        weight_decay=cfg.WEIGHT_DECAY
     )
     criterion = nn.BCEWithLogitsLoss(
         pos_weight=torch.tensor([pos_weight], device=device)
     )
     
-    # DataLoader for mini-batch training
-    train_loader = LinkNeighborLoader(
-        data,
-        num_neighbors=config['training']['num_neighbors'],
-        edge_label_index=train_edges,
-        edge_label=data.edge_y[train_edges[0]],  # Assume edge_y indexed by source
-        batch_size=config['training']['batch_size'],
-        shuffle=True
-    )
+    print(f"\n⚙️  Training Configuration:")
+    print(f"   Epochs:         {cfg.EPOCHS}")
+    print(f"   Batch size:     {cfg.BATCH_SIZE}")
+    print(f"   Learning rate:  {cfg.LEARNING_RATE}")
+    print(f"   Weight decay:   {cfg.WEIGHT_DECAY}")
+    print(f"   Early stopping: {cfg.PATIENCE} epochs")
     
-    # Training loop
-    early_stopping = EarlyStopping(
-        patience=config['training'].get('patience', 10),
-        min_delta=config['training'].get('min_delta', 0.001)
-    )
+    # Sampler & Early stopping
+    train_sampler = RandomEdgeSampler(train_idx_t, batch_size=cfg.BATCH_SIZE, shuffle=True)
+    early_stopping = EarlyStopping(patience=cfg.PATIENCE, min_delta=cfg.MIN_DELTA)
     
+    # Training history
     best_f1 = 0.0
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'val_f1': [],
+        'val_accuracy': []
+    }
     
-    for epoch in range(1, config['training']['epochs'] + 1):
+    print(f"\n🔥 Starting Training...")
+    print("-" * 70)
+    
+    epoch_pbar = tqdm(range(1, cfg.EPOCHS + 1), desc="Training", unit="epoch", ncols=100)
+    
+    for epoch in epoch_pbar:
         # Train
         model.train()
         total_loss = 0
-        for batch in train_loader:
-            batch = batch.to(device)
+        num_batches = 0
+        
+        for batch_edge_idx in train_sampler:
             optimizer.zero_grad()
             
+            # Get edge indices for this batch
+            batch_edge_index = data.edge_index[:, batch_edge_idx]
+            
+            # Forward pass on full graph, but compute loss only on batch edges
             logits = model(
-                batch.x, 
-                batch.edge_index, 
-                batch.edge_attr,
-                batch.edge_label_index
+                data.x, 
+                data.edge_index, 
+                data.edge_attr,
+                batch_edge_index
             )
             
-            loss = criterion(logits, batch.edge_label.float())
+            # Get labels for batch edges
+            batch_labels = data.edge_y[batch_edge_idx]
+            
+            loss = criterion(logits, batch_labels.float())
             loss.backward()
             optimizer.step()
+            
             total_loss += loss.item()
+            num_batches += 1
         
-        train_loss = total_loss / len(train_loader)
+        train_loss = total_loss / num_batches
         
         # Validate
-        val_loss, val_metrics = evaluate_edges(
-            model, data, val_edges, criterion, device
-        )
+        val_loss, val_metrics = evaluate_edges(model, data, val_idx_t, criterion, device)
         
-        if epoch % 5 == 0 or epoch == 1:
-            logger.info(f"Epoch {epoch:3d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                       f"Val Acc: {val_metrics['accuracy']:.4f} | Val F1: {val_metrics['f1']:.4f}")
+        # Update history
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['val_f1'].append(val_metrics['f1'])
+        history['val_accuracy'].append(val_metrics['accuracy'])
         
-        # Save best
+        # Update progress bar
+        epoch_pbar.set_postfix({
+            'loss': f"{train_loss:.4f}",
+            'val_f1': f"{val_metrics['f1']:.4f}",
+            'val_acc': f"{val_metrics['accuracy']:.4f}"
+        })
+        
+        # Save best model
         if val_metrics['f1'] > best_f1:
             best_f1 = val_metrics['f1']
-            save_path = Path(config.get('output_dir', 'output/endpoint_gnn')) / 'best_model.pt'
+            save_path = Path(output_dir) / 'best_model.pt'
             save_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
                 'epoch': epoch,
@@ -135,83 +210,81 @@ def train_endpoint_gnn(
         
         # Early stopping
         if early_stopping(val_metrics['f1']):
-            logger.info(f"Early stopping at epoch {epoch}")
+            print(f"\n⚠️  Early stopping at epoch {epoch}")
             break
     
-    # Tune threshold on validation edges
-    logger.info("\n" + "=" * 70)
-    logger.info("TUNING THRESHOLD ON VALIDATION")
-    logger.info("=" * 70)
-    best_threshold = tune_threshold_edges(model, data, val_edges, device)
-    logger.info(f"Best threshold: {best_threshold:.4f}\n")
+    print(f"\n✅ Training completed! Best validation F1: {best_f1:.4f}")
     
-    # Final test
-    logger.info("=" * 70)
-    logger.info("FINAL TEST EVALUATION")
-    logger.info("=" * 70)
+    # Tune threshold
+    print("\n" + "=" * 70)
+    print("🎯 TUNING DECISION THRESHOLD")
+    print("=" * 70)
+    best_threshold = tune_threshold_edges(model, data, val_idx_t, device)
+    print(f"✅ Optimal threshold: {best_threshold:.4f}")
+    
+    # Final evaluation
+    print("\n" + "=" * 70)
+    print("🧪 FINAL EVALUATION ON TEST SET")
+    print("=" * 70)
     
     start_time = time.time()
     test_loss, test_metrics, y_true, y_pred, y_probs = evaluate_edges_with_predictions(
-        model, data, test_edges, criterion, best_threshold, device
+        model, data, test_idx_t, criterion, best_threshold, device
     )
     inference_time = time.time() - start_time
     latency_per_sample = inference_time / len(y_true)
     
-    logger.info(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
-    logger.info(f"Test F1: {test_metrics['f1']:.4f}")
-    logger.info(f"Test Precision: {test_metrics['precision']:.4f}")
-    logger.info(f"Test Recall: {test_metrics['recall']:.4f}")
-    if 'auc' in test_metrics:
-        logger.info(f"Test AUC: {test_metrics['auc']:.4f}")
-    logger.info(f"Test FAR: {test_metrics['far']:.4f}")
-    logger.info(f"\n⏱️  Inference Performance:")
-    logger.info(f"   Total time: {inference_time:.2f}s")
-    logger.info(f"   Latency per sample: {latency_per_sample*1000:.4f}ms")
-    logger.info(f"   Throughput: {len(y_true)/inference_time:.2f} samples/sec")
-    logger.info(f"\nClassification Report:\n{classification_report(y_true, y_pred)}")
+    print(f"\n📈 Test Results:")
+    print(f"   Accuracy:  {test_metrics['accuracy']:.4f}")
+    print(f"   Precision: {test_metrics['precision']:.4f}")
+    print(f"   Recall:    {test_metrics['recall']:.4f}")
+    print(f"   F1 Score:  {test_metrics['f1']:.4f}")
+    print(f"   AUC:       {test_metrics.get('auc', 0):.4f}")
+    print(f"   FAR:       {test_metrics['far']:.4f}")
+    print(f"\n⏱️  Inference Performance:")
+    print(f"   Total time:   {inference_time:.2f}s")
+    print(f"   Latency:      {latency_per_sample*1000:.4f} ms/sample")
+    print(f"   Throughput:   {len(y_true)/inference_time:.2f} samples/sec")
     
-    # Save visualizations and reports
-    output_dir = Path(config.get('output_dir', 'output/endpoint_gnn'))
-    logger.info(f"\n💾 Saving results to {output_dir}/")
+    # Save results
+    output_path = Path(output_dir)
+    print(f"\n💾 Saving results to {output_path}/")
     
-    save_metrics_plots(y_true, y_pred, y_probs, test_metrics, str(output_dir))
-    save_metrics_report(test_metrics, str(output_dir), 
-                       y_true, y_pred, latency=latency_per_sample)
+    save_metrics_plots(y_true, y_pred, y_probs, test_metrics, 
+                       str(output_path), history=history,
+                       latency_ms=latency_per_sample * 1000)
+    save_metrics_report(test_metrics, str(output_path), 
+                        y_true, y_pred, latency=latency_per_sample)
     
-    logger.info("\n" + "="*70)
-    logger.info("✨ ALL DONE!")
-    logger.info("="*70 + "\n")
+    print("\n" + "=" * 70)
+    print("✨ ALL DONE!")
+    print("=" * 70 + "\n")
     
     return test_metrics
 
 
 def tune_threshold_edges(model, data, edge_indices, device):
-    """Find optimal threshold on validation edges to maximize F1 score."""
+    """Find optimal threshold to maximize F1 score."""
     model.eval()
     
+    # Get edge index for these edges
+    edge_index_subset = data.edge_index[:, edge_indices]
+    
     with torch.no_grad():
-        logits = model(data.x, data.edge_index, data.edge_attr, edge_indices)
+        logits = model(data.x, data.edge_index, data.edge_attr, edge_index_subset)
         probs = torch.sigmoid(logits).cpu().numpy()
-        true = data.edge_y[edge_indices[0]].cpu().numpy()
+        true = data.edge_y[edge_indices].cpu().numpy()
     
-    # Search for best threshold
     best_t, best_f1 = 0.5, 0.0
-    best_precision, best_recall = 0.0, 0.0
     
-    for t in np.linspace(0.01, 0.99, 99):
+    thresholds = np.linspace(0.01, 0.99, 99)
+    for t in tqdm(thresholds, desc="   Searching threshold", ncols=100, leave=False):
         pred = (probs >= t).astype(int)
         f1 = f1_score(true, pred, zero_division=0)
         
         if f1 > best_f1:
             best_f1 = f1
             best_t = t
-            best_precision = precision_score(true, pred, zero_division=0)
-            best_recall = recall_score(true, pred, zero_division=0)
-    
-    logger.info(f"Best threshold = {best_t:.4f}")
-    logger.info(f"Val Precision  = {best_precision:.4f}")
-    logger.info(f"Val Recall     = {best_recall:.4f}")
-    logger.info(f"Val F1         = {best_f1:.4f}")
     
     return best_t
 
@@ -219,15 +292,15 @@ def tune_threshold_edges(model, data, edge_indices, device):
 def evaluate_edges(model, data, edge_indices, criterion, device, threshold=0.5):
     """Evaluate model on given edges."""
     model.eval()
+    
+    # Get edge index for these edges
+    edge_index_subset = data.edge_index[:, edge_indices]
+    
     with torch.no_grad():
-        logits = model(data.x, data.edge_index, data.edge_attr, edge_indices)
-        
-        # Get edge labels
-        edge_labels = data.edge_y[edge_indices[0]]
-        
+        logits = model(data.x, data.edge_index, data.edge_attr, edge_index_subset)
+        edge_labels = data.edge_y[edge_indices]
         loss = criterion(logits, edge_labels.float()).item()
         
-        # Apply sigmoid + threshold
         probs = torch.sigmoid(logits).cpu().numpy()
         pred = (probs >= threshold).astype(int)
         true = edge_labels.cpu().numpy()
@@ -238,16 +311,17 @@ def evaluate_edges(model, data, edge_indices, criterion, device, threshold=0.5):
 
 
 def evaluate_edges_with_predictions(model, data, edge_indices, criterion, threshold, device):
-    """Evaluate and return predictions with probabilities."""
+    """Evaluate and return predictions."""
     model.eval()
+    
+    # Get edge index for these edges
+    edge_index_subset = data.edge_index[:, edge_indices]
+    
     with torch.no_grad():
-        logits = model(data.x, data.edge_index, data.edge_attr, edge_indices)
-        
-        edge_labels = data.edge_y[edge_indices[0]]
-        
+        logits = model(data.x, data.edge_index, data.edge_attr, edge_index_subset)
+        edge_labels = data.edge_y[edge_indices]
         loss = criterion(logits, edge_labels.float()).item()
         
-        # Apply sigmoid + threshold
         probs = torch.sigmoid(logits).cpu().numpy()
         pred = (probs >= threshold).astype(int)
         true = edge_labels.cpu().numpy()

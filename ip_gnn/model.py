@@ -3,12 +3,9 @@
 Node = endpoint (IP/IP:Port), Edge = flow, Task = edge classification
 """
 
-import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-logger = logging.getLogger(__name__)
 
 
 class EdgeFeatureSAGEConv(nn.Module):
@@ -54,13 +51,12 @@ class EdgeFeatureSAGEConv(nn.Module):
 
 
 class EGraphSAGE(nn.Module):
-    """
-    E-GraphSAGE for edge classification.
+    """E-GraphSAGE for edge classification.
     
     Architecture:
     - K layers of EdgeFeatureSAGEConv
     - Edge representation: concat(z_u, z_v)
-    - Edge classifier: Linear(2*hidden_dim -> num_classes)
+    - Edge classifier: Linear(2*hidden_dim -> 1)
     """
     
     def __init__(
@@ -98,7 +94,7 @@ class EGraphSAGE(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
         
-        logger.info(f"E-GraphSAGE: {in_dim}→{hidden_dim}x{num_layers}→1 (edge binary)")
+        print(f"   E-GraphSAGE: {in_dim}→{hidden_dim}x{num_layers}→1 (edge binary)")
     
     def forward(
         self, 
@@ -107,19 +103,18 @@ class EGraphSAGE(nn.Module):
         edge_attr: torch.Tensor,
         edge_label_index: torch.Tensor = None
     ) -> torch.Tensor:
-        """
-        Forward pass for edge classification.
+        """Forward pass for edge classification.
         
         Args:
             x: Node features [num_nodes, in_dim]
             edge_index: All edges [2, num_edges]
             edge_attr: Edge features [num_edges, in_dim]
-            edge_label_index: Edges to classify [2, num_target_edges] (default: all)
+            edge_label_index: Edges to classify [2, num_target_edges]
             
         Returns:
-            Edge logits [num_target_edges, num_classes]
+            Edge logits [num_target_edges]
         """
-        # Update node embeddings via edge-feature-based message passing
+        # Update node embeddings
         h = x
         for i, conv in enumerate(self.convs):
             h = conv(h, edge_index, edge_attr)
@@ -137,7 +132,7 @@ class EGraphSAGE(nn.Module):
         # Concatenate embeddings
         edge_emb = torch.cat([src_emb, dst_emb], dim=1)
         
-        # Classify edges (returns logits, no sigmoid)
+        # Classify edges
         edge_logits = self.edge_classifier(edge_emb)
         
-        return edge_logits.squeeze(-1)  # Shape: [num_target_edges]
+        return edge_logits.squeeze(-1)

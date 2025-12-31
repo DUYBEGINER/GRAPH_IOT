@@ -6,259 +6,152 @@ Train GNN models for Intrusion Detection System.
 
 Commands:
   flow      - Train Flow-based GNN (Node = flow, Edge = KNN)
-  endpoint  - Train Endpoint-based GNN (Node = endpoint, Edge = flow)
-  preprocess - Preprocess data only
+  ip        - Train IP-based GNN (Node = endpoint, Edge = flow)
 
 Examples:
-  python main.py flow --csv data/Tuesday_20_02_exist_ip.csv
-  python main.py endpoint --csv data/Tuesday_20_02_exist_ip.csv
-  python main.py preprocess --csv data/Tuesday_20_02_exist_ip.csv --output data/preprocessed.pt
+  python main.py flow
+  python main.py ip
 """
 
 import sys
 import argparse
-import logging
 from pathlib import Path
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 
 def run_flow_gnn(args):
     """Run Flow-based GNN pipeline."""
-    import yaml
-    import pandas as pd
     import torch
     import numpy as np
-    from sklearn.preprocessing import StandardScaler
     
-    from preprocess import load_cicids_csv, split_and_scale, set_seed
-    from flow_gnn import build_knn_graph, train_flow_gnn, get_device
+    from flow_gnn import build_knn_graph, train_flow_gnn, get_device, set_seed, config as cfg
     
-    # Load config
-    config_path = args.config or "flow_gnn/config.yaml"
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    # Setup
+    device_str = args.device or cfg.DEVICE
+    set_seed(cfg.SEED)
+    device = get_device(device_str)
     
-    # Override with CLI args
-    if args.device:
-        config['project']['device'] = args.device
+    print("=" * 70)
+    print("🔷 FLOW-BASED GNN PIPELINE")
+    print("=" * 70)
     
-    set_seed(config['project']['seed'])
-    device = get_device(config['project']['device'])
+    # Load preprocessed data
+    data_dir = Path(cfg.DATA_DIR)
     
-    logger.info("=" * 70)
-    logger.info("FLOW-BASED GNN PIPELINE")
-    logger.info("=" * 70)
+    print("\n📂 [1/4] Loading preprocessed data...")
+    print(f"   Data directory: {data_dir}")
     
-    # Load preprocessed data from dataset-processed folder
-    data_dir = Path("dataset-processed")
-    
-    # 1. Load preprocessed data
-    logger.info("\n[1/4] Loading preprocessed data...")
-    logger.info(f"   Loading from: {data_dir}")
-    
-    x_tensor = torch.tensor(np.load(data_dir / "X.npy"), dtype=torch.float)
-    y_tensor = torch.tensor(np.load(data_dir / "y.npy"), dtype=torch.long)
+    X = np.load(data_dir / "X.npy")
+    y = np.load(data_dir / "y.npy")
     idx_train = np.load(data_dir / "idx_train.npy")
     idx_val = np.load(data_dir / "idx_val.npy")
     idx_test = np.load(data_dir / "idx_test.npy")
     
-    logger.info(f"   X shape: {x_tensor.shape}")
-    logger.info(f"   y shape: {y_tensor.shape}")
-    logger.info(f"   Train samples: {len(idx_train):,}")
-    logger.info(f"   Val samples: {len(idx_val):,}")
-    logger.info(f"   Test samples: {len(idx_test):,}")
+    x_tensor = torch.tensor(X, dtype=torch.float)
+    y_tensor = torch.tensor(y, dtype=torch.long)
     
-    # 2. Build KNN graph on FULL dataset
-    logger.info("\n[2/4] Building KNN graph on full dataset...")
-    edge_index = build_knn_graph(
-        x_tensor.numpy(),
-        k=config['graph']['k_neighbors']
-    )
+    print(f"   Features: {x_tensor.shape}")
+    print(f"   Train: {len(idx_train):,} | Val: {len(idx_val):,} | Test: {len(idx_test):,}")
     
-    # 3. Create masks
-    logger.info("\n[3/4] Creating train/val/test masks...")
-    train_mask = torch.zeros(len(y_tensor), dtype=torch.bool)
-    val_mask = torch.zeros(len(y_tensor), dtype=torch.bool)
-    test_mask = torch.zeros(len(y_tensor), dtype=torch.bool)
+    # Build KNN graph
+    print("\n🔨 [2/4] Building KNN graph...")
+    edge_index = build_knn_graph(X, k=cfg.K_NEIGHBORS)
+    
+    # Create masks
+    print("\n🎯 [3/4] Creating train/val/test masks...")
+    train_mask = torch.zeros(len(y), dtype=torch.bool)
+    val_mask = torch.zeros(len(y), dtype=torch.bool)
+    test_mask = torch.zeros(len(y), dtype=torch.bool)
     train_mask[idx_train] = True
     val_mask[idx_val] = True
     test_mask[idx_test] = True
     
-    # 4. Train
-    logger.info("\n[4/4] Training model...")
+    # Train
+    print("\n🚀 [4/4] Training model...")
+    output_dir = args.output or cfg.OUTPUT_DIR
     test_metrics = train_flow_gnn(
         x_tensor, y_tensor,
         edge_index,
         train_mask, val_mask, test_mask,
-        config, device
+        device=device,
+        output_dir=output_dir
     )
     
-    logger.info("\n" + "=" * 70)
-    logger.info("FLOW-BASED GNN COMPLETED")
-    logger.info("=" * 70)
-    logger.info(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
-    logger.info(f"Test F1: {test_metrics['f1']:.4f}")
+    print("\n" + "=" * 70)
+    print("✅ FLOW-BASED GNN COMPLETED")
+    print("=" * 70)
+    print(f"   Accuracy: {test_metrics['accuracy']:.4f}")
+    print(f"   F1 Score: {test_metrics['f1']:.4f}")
+    print(f"   Output:   {output_dir}")
 
 
-def run_endpoint_gnn(args):
-    """Run Endpoint-based GNN pipeline."""
-    import yaml
-    import pandas as pd
-    import torch
+def run_ip_gnn(args):
+    """Run IP-based GNN pipeline."""
     import numpy as np
-    from sklearn.preprocessing import StandardScaler
+    import pandas as pd
     
-    from preprocess import set_seed
-    from endpoint_gnn import create_endpoint_graph, train_endpoint_gnn, get_device
+    from ip_gnn import create_endpoint_graph, train_ip_gnn, get_device, set_seed, config as cfg
     
-    # Load config
-    config_path = args.config or "endpoint_gnn/config.yaml"
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    # Setup
+    device_str = args.device or cfg.DEVICE
+    set_seed(cfg.SEED)
+    device = get_device(device_str)
     
-    # Override with CLI args
-    if args.csv:
-        config['data']['csv_path'] = args.csv
-    if args.device:
-        config['project']['device'] = args.device
+    print("=" * 70)
+    print("🔷 IP-BASED GNN PIPELINE (E-GraphSAGE)")
+    print("=" * 70)
     
-    set_seed(config['project']['seed'])
-    device = get_device(config['project']['device'])
+    # Load preprocessed data
+    data_dir = Path(cfg.DATA_DIR)
     
-    logger.info("=" * 70)
-    logger.info("ENDPOINT-BASED GNN PIPELINE")
-    logger.info("=" * 70)
+    print("\n📂 [1/4] Loading preprocessed data...")
+    print(f"   Data directory: {data_dir}")
     
-    # 1. Load CSV
-    logger.info("\n[1/5] Loading CSV data...")
-    csv_path = config['data'].get('csv_path') or args.csv
-    df = pd.read_csv(csv_path)
-    logger.info(f"Loaded {len(df)} records")
+    # Load data with IPs
+    df = pd.read_csv(data_dir / "data_with_ips.csv")
+    idx_train = np.load(data_dir / "idx_train.npy")
+    idx_val = np.load(data_dir / "idx_val.npy")
+    idx_test = np.load(data_dir / "idx_test.npy")
     
-    # 2. Prepare features
-    logger.info("\n[2/5] Preparing features...")
-    label_col = config['data']['label_col']
-    drop_cols = config['data']['drop_cols']
+    print(f"   Total samples: {len(df):,}")
+    print(f"   Train: {len(idx_train):,} | Val: {len(idx_val):,} | Test: {len(idx_test):,}")
     
-    # Get numeric features
-    feature_cols = []
-    for col in df.columns:
-        if col not in drop_cols and col != label_col:
-            try:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                if df[col].notna().sum() > 0:
-                    feature_cols.append(col)
-            except:
-                pass
+    # Prepare features
+    print("\n🔧 [2/4] Preparing features...")
+    ip_cols = [cfg.SRC_IP_COL, cfg.DST_IP_COL]
+    feature_cols = [c for c in df.columns if c not in ip_cols and c != cfg.LABEL_COL]
     
-    # Clean features
+    # Ensure numeric
+    for col in feature_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     
-    # Scale features
-    scaler = StandardScaler()
-    df[feature_cols] = scaler.fit_transform(df[feature_cols])
+    print(f"   Features: {len(feature_cols)}")
     
-    logger.info(f"Features: {len(feature_cols)}")
+    # Build graph
+    print("\n🔨 [3/4] Building endpoint graph...")
+    data, num_nodes = create_endpoint_graph(df, feature_cols)
     
-    # 3. Build graph
-    logger.info("\n[3/5] Building endpoint graph...")
-    data, num_nodes = create_endpoint_graph(df, feature_cols, config)
+    # Use pre-split indices from preprocessing
+    print("\n🎯 Using pre-split indices from preprocessing...")
+    print(f"   Train edges: {len(idx_train):,}")
+    print(f"   Val edges:   {len(idx_val):,}")
+    print(f"   Test edges:  {len(idx_test):,}")
     
-    # 4. Split edges
-    logger.info("\n[4/5] Splitting edges...")
-    num_edges = data.edge_index.shape[1]
-    indices = torch.randperm(num_edges)
-    
-    test_size = int(num_edges * config['training']['test_split'])
-    val_size = int(num_edges * config['training']['val_split'])
-    
-    test_idx = indices[:test_size]
-    val_idx = indices[test_size:test_size + val_size]
-    train_idx = indices[test_size + val_size:]
-    
-    train_edges = data.edge_index[:, train_idx]
-    val_edges = data.edge_index[:, val_idx]
-    test_edges = data.edge_index[:, test_idx]
-    
-    logger.info(f"Train edges: {train_edges.shape[1]}")
-    logger.info(f"Val edges: {val_edges.shape[1]}")
-    logger.info(f"Test edges: {test_edges.shape[1]}")
-    
-    # 5. Train
-    logger.info("\n[5/5] Training model...")
-    test_metrics = train_endpoint_gnn(
-        data, train_edges, val_edges, test_edges,
-        config, device
+    # Train
+    print("\n🚀 [4/4] Training model...")
+    output_dir = args.output or cfg.OUTPUT_DIR
+    test_metrics = train_ip_gnn(
+        data, idx_train, idx_val, idx_test,
+        device=device,
+        output_dir=output_dir
     )
     
-    logger.info("\n" + "=" * 70)
-    logger.info("ENDPOINT-BASED GNN COMPLETED")
-    logger.info("=" * 70)
-    logger.info(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
-    logger.info(f"Test F1: {test_metrics['f1']:.4f}")
-
-
-def run_preprocess(args):
-    """Run preprocessing only."""
-    import yaml
-    import torch
-    from preprocess import load_cicids_csv, split_and_scale, set_seed
-    
-    config_path = args.config or "preprocess/config.yaml"
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    
-    if args.csv:
-        config['data']['csv_path'] = args.csv
-    
-    set_seed(config['project']['seed'])
-    
-    logger.info("=" * 70)
-    logger.info("PREPROCESSING DATA")
-    logger.info("=" * 70)
-    
-    # Load
-    logger.info("\n[1/3] Loading CSV...")
-    X, y, feature_cols = load_cicids_csv(
-        csv_path=config['data']['csv_path'],
-        max_samples=config['data'].get('max_samples'),
-        seed=config['project']['seed']
-    )
-    
-    # Split and scale
-    logger.info("\n[2/3] Splitting and scaling...")
-    x_tensor, y_tensor, idx_train, idx_val, idx_test, scaler = split_and_scale(
-        X, y,
-        val_ratio=config['data']['val_split'],
-        test_ratio=config['data']['test_split'],
-        seed=config['project']['seed']
-    )
-    
-    # Save
-    logger.info("\n[3/3] Saving preprocessed data...")
-    output_path = args.output or f"{config['project']['output_dir']}/preprocessed.pt"
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    
-    torch.save({
-        'x': x_tensor,
-        'y': y_tensor,
-        'idx_train': idx_train,
-        'idx_val': idx_val,
-        'idx_test': idx_test,
-        'feature_cols': feature_cols,
-        'scaler': scaler
-    }, output_path)
-    
-    logger.info(f"Saved to: {output_path}")
-    logger.info("\n" + "=" * 70)
-    logger.info("PREPROCESSING COMPLETED")
-    logger.info("=" * 70)
+    print("\n" + "=" * 70)
+    print("✅ IP-BASED GNN COMPLETED")
+    print("=" * 70)
+    print(f"   Accuracy: {test_metrics['accuracy']:.4f}")
+    print(f"   F1 Score: {test_metrics['f1']:.4f}")
+    print(f"   Output:   {output_dir}")
 
 
 def main():
@@ -273,22 +166,15 @@ def main():
     
     # Flow command
     flow_parser = subparsers.add_parser('flow', help='Train Flow-based GNN')
-    flow_parser.add_argument('--csv', type=str, help='Path to CSV file')
-    flow_parser.add_argument('--config', type=str, help='Path to config.yaml')
-    flow_parser.add_argument('--max-samples', type=int, help='Max samples to load')
-    flow_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'mps', 'cpu'], help='Device')
+    flow_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'mps', 'cpu'], 
+                             help='Device to use')
+    flow_parser.add_argument('--output', type=str, help='Output directory')
     
-    # Endpoint command
-    endpoint_parser = subparsers.add_parser('endpoint', help='Train Endpoint-based GNN')
-    endpoint_parser.add_argument('--csv', type=str, help='Path to CSV file')
-    endpoint_parser.add_argument('--config', type=str, help='Path to config.yaml')
-    endpoint_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'mps', 'cpu'], help='Device')
-    
-    # Preprocess command
-    preprocess_parser = subparsers.add_parser('preprocess', help='Preprocess data only')
-    preprocess_parser.add_argument('--csv', type=str, required=True, help='Path to CSV file')
-    preprocess_parser.add_argument('--config', type=str, help='Path to config.yaml')
-    preprocess_parser.add_argument('--output', type=str, help='Output path for preprocessed data')
+    # IP command
+    ip_parser = subparsers.add_parser('ip', help='Train IP-based GNN')
+    ip_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'mps', 'cpu'], 
+                           help='Device to use')
+    ip_parser.add_argument('--output', type=str, help='Output directory')
     
     args = parser.parse_args()
     
@@ -299,12 +185,12 @@ def main():
     try:
         if args.command == 'flow':
             run_flow_gnn(args)
-        elif args.command == 'endpoint':
-            run_endpoint_gnn(args)
-        elif args.command == 'preprocess':
-            run_preprocess(args)
+        elif args.command == 'ip':
+            run_ip_gnn(args)
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
