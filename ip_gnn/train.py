@@ -14,33 +14,6 @@ from .model import EGraphSAGE
 from .utils import compute_metrics, EarlyStopping, get_device, save_metrics_plots, save_metrics_report, set_seed
 
 
-class RandomEdgeSampler:
-    """Simple random edge sampler for mini-batch training on full graph."""
-    
-    def __init__(self, edge_indices: torch.Tensor, batch_size: int, shuffle: bool = True):
-        """
-        Args:
-            edge_indices: Indices of edges to sample from (1D tensor)
-            batch_size: Number of edges per batch
-            shuffle: Whether to shuffle edges each epoch
-        """
-        self.edge_indices = edge_indices
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        
-    def __iter__(self):
-        indices = self.edge_indices.clone()
-        if self.shuffle:
-            perm = torch.randperm(len(indices))
-            indices = indices[perm]
-        
-        for i in range(0, len(indices), self.batch_size):
-            yield indices[i:i + self.batch_size]
-    
-    def __len__(self):
-        return (len(self.edge_indices) + self.batch_size - 1) // self.batch_size
-
-
 def train_ip_gnn(
     data,
     train_idx: np.ndarray,
@@ -80,18 +53,20 @@ def train_ip_gnn(
     val_idx_t = torch.tensor(val_idx, dtype=torch.long, device=device)
     test_idx_t = torch.tensor(test_idx, dtype=torch.long, device=device)
     
-    # Calculate pos_weight from training edges
+    # Calculate class weights for CrossEntropyLoss
     train_edge_y = data.edge_y[train_idx_t]
     pos = (train_edge_y == 1).sum().item()
     neg = (train_edge_y == 0).sum().item()
-    pos_weight = neg / pos if pos > 0 else 1.0
+    total = pos + neg
+    # Weight inversely proportional to class frequency
+    class_weights = torch.tensor([total / (2 * neg), total / (2 * pos)], device=device)
     
     print(f"\n📊 Dataset Statistics:")
     print(f"   Training edges:   {len(train_idx):,}")
     print(f"   Validation edges: {len(val_idx):,}")
     print(f"   Test edges:       {len(test_idx):,}")
     print(f"   Class distribution: Benign={neg:,} ({neg/(neg+pos)*100:.1f}%), Attack={pos:,} ({pos/(neg+pos)*100:.1f}%)")
-    print(f"   Positive weight:    {pos_weight:.4f}")
+    print(f"   Class weights:      [{class_weights[0]:.4f}, {class_weights[1]:.4f}]")
     
     # Model
     print(f"\n🏗️  Model Configuration:")
@@ -113,25 +88,22 @@ def train_ip_gnn(
     print(f"   Total params: {total_params:,}")
     print(f"   Device:       {device}")
     
-    # Optimizer & Loss
+    # Optimizer & Loss (Softmax + CrossEntropy as per paper)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg.LEARNING_RATE,
         weight_decay=cfg.WEIGHT_DECAY
     )
-    criterion = nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor([pos_weight], device=device)
-    )
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     
     print(f"\n⚙️  Training Configuration:")
     print(f"   Epochs:         {cfg.EPOCHS}")
-    print(f"   Batch size:     {cfg.BATCH_SIZE}")
     print(f"   Learning rate:  {cfg.LEARNING_RATE}")
     print(f"   Weight decay:   {cfg.WEIGHT_DECAY}")
     print(f"   Early stopping: {cfg.PATIENCE} epochs")
+    print(f"   Training mode:  Full-batch (1 forward/epoch)")
     
-    # Sampler & Early stopping
-    train_sampler = RandomEdgeSampler(train_idx_t, batch_size=cfg.BATCH_SIZE, shuffle=True)
+    # Early stopping
     early_stopping = EarlyStopping(patience=cfg.PATIENCE, min_delta=cfg.MIN_DELTA)
     
     # Training history
@@ -143,45 +115,28 @@ def train_ip_gnn(
         'val_accuracy': []
     }
     
-    print(f"\n🔥 Starting Training...")
+    print(f"\n🔥 Starting Training (Full-batch mode)...")
     print("-" * 70)
     
     epoch_pbar = tqdm(range(1, cfg.EPOCHS + 1), desc="Training", unit="epoch", ncols=100)
     
     for epoch in epoch_pbar:
-        # Train
+        # Train: 1 forward pass per epoch
         model.train()
-        total_loss = 0
-        num_batches = 0
+        optimizer.zero_grad()
         
-        for batch_edge_idx in train_sampler:
-            optimizer.zero_grad()
-            
-            # Get edge indices for this batch
-            batch_edge_index = data.edge_index[:, batch_edge_idx]
-            
-            # Forward pass on full graph, but compute loss only on batch edges
-            logits = model(
-                data.x, 
-                data.edge_index, 
-                data.edge_attr,
-                batch_edge_index
-            )
-            
-            # Get labels for batch edges
-            batch_labels = data.edge_y[batch_edge_idx]
-            
-            loss = criterion(logits, batch_labels.float())
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            num_batches += 1
+        # Single forward pass on entire graph for all edges
+        logits_all = model(data.x, data.edge_index, data.edge_attr)  # [num_edges, num_classes]
         
-        train_loss = total_loss / num_batches
+        # Compute loss only on training edges
+        loss = criterion(logits_all[train_idx_t], data.edge_y[train_idx_t])
+        loss.backward()
+        optimizer.step()
         
-        # Validate
-        val_loss, val_metrics = evaluate_edges(model, data, val_idx_t, criterion, device)
+        train_loss = loss.item()
+        
+        # Validate: use logits from full forward pass
+        val_loss, val_metrics = evaluate_edges_fullbatch(model, data, val_idx_t, criterion, device)
         
         # Update history
         history['train_loss'].append(train_loss)
@@ -264,15 +219,19 @@ def train_ip_gnn(
 
 
 def tune_threshold_edges(model, data, edge_indices, device):
-    """Find optimal threshold to maximize F1 score."""
+    """Find optimal threshold to maximize F1 score.
+    
+    With softmax output, we tune threshold on P(attack) = softmax(logits)[:, 1]
+    """
     model.eval()
     
-    # Get edge index for these edges
-    edge_index_subset = data.edge_index[:, edge_indices]
-    
     with torch.no_grad():
-        logits = model(data.x, data.edge_index, data.edge_attr, edge_index_subset)
-        probs = torch.sigmoid(logits).cpu().numpy()
+        # Single forward pass for all edges
+        logits_all = model(data.x, data.edge_index, data.edge_attr)  # [num_edges, num_classes]
+        # Get logits for validation edges
+        logits = logits_all[edge_indices]
+        # Softmax -> probability of class 1 (attack)
+        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
         true = data.edge_y[edge_indices].cpu().numpy()
     
     best_t, best_f1 = 0.5, 0.0
@@ -289,19 +248,20 @@ def tune_threshold_edges(model, data, edge_indices, device):
     return best_t
 
 
-def evaluate_edges(model, data, edge_indices, criterion, device, threshold=0.5):
-    """Evaluate model on given edges."""
+def evaluate_edges_fullbatch(model, data, edge_indices, criterion, device, threshold=0.5):
+    """Evaluate model on given edges using full-batch forward pass."""
     model.eval()
     
-    # Get edge index for these edges
-    edge_index_subset = data.edge_index[:, edge_indices]
-    
     with torch.no_grad():
-        logits = model(data.x, data.edge_index, data.edge_attr, edge_index_subset)
+        # Single forward pass for all edges
+        logits_all = model(data.x, data.edge_index, data.edge_attr)  # [num_edges, num_classes]
+        # Get logits for evaluation edges
+        logits = logits_all[edge_indices]
         edge_labels = data.edge_y[edge_indices]
-        loss = criterion(logits, edge_labels.float()).item()
+        loss = criterion(logits, edge_labels.long()).item()
         
-        probs = torch.sigmoid(logits).cpu().numpy()
+        # Softmax -> probability of class 1 (attack)
+        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
         pred = (probs >= threshold).astype(int)
         true = edge_labels.cpu().numpy()
         
@@ -311,18 +271,19 @@ def evaluate_edges(model, data, edge_indices, criterion, device, threshold=0.5):
 
 
 def evaluate_edges_with_predictions(model, data, edge_indices, criterion, threshold, device):
-    """Evaluate and return predictions."""
+    """Evaluate and return predictions using full-batch forward pass."""
     model.eval()
     
-    # Get edge index for these edges
-    edge_index_subset = data.edge_index[:, edge_indices]
-    
     with torch.no_grad():
-        logits = model(data.x, data.edge_index, data.edge_attr, edge_index_subset)
+        # Single forward pass for all edges
+        logits_all = model(data.x, data.edge_index, data.edge_attr)  # [num_edges, num_classes]
+        # Get logits for evaluation edges
+        logits = logits_all[edge_indices]
         edge_labels = data.edge_y[edge_indices]
-        loss = criterion(logits, edge_labels.float()).item()
+        loss = criterion(logits, edge_labels.long()).item()
         
-        probs = torch.sigmoid(logits).cpu().numpy()
+        # Softmax -> probability of class 1 (attack)
+        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
         pred = (probs >= threshold).astype(int)
         true = edge_labels.cpu().numpy()
         

@@ -1,0 +1,12 @@
+# Streamlit Configuration
+# Tăng giới hạn upload file lên 400MB (mặc định là 200MB)
+
+[server]
+maxUploadSize = 400
+
+[theme]
+primaryColor = "#FF6B6B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"
+font = "sans serif"

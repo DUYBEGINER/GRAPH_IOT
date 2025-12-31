@@ -27,16 +27,6 @@ def create_endpoint_graph(
     anti_leakage: bool = None
 ) -> Tuple[Data, int]:
     """Create PyG Data object for endpoint-based graph.
-    
-    Args:
-        df: DataFrame with flow records
-        feature_cols: List of feature column names
-        src_ip_col: Source IP column (default from config)
-        dst_ip_col: Destination IP column (default from config)
-        label_col: Label column (default from config)
-        mapping_mode: "ip_port" or "ip_only" (default from config)
-        anti_leakage: Enable IP random mapping (default from config)
-        
     Returns:
         data: PyG Data object
         num_nodes: Number of nodes

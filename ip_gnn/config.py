@@ -39,12 +39,12 @@ MAPPING_MODE = "ip_only"
 
 # Anti-leakage settings
 ANTI_LEAKAGE_ENABLED = True
-ANTI_LEAKAGE_SCOPE = "all_ips"  # all_ips or src_ip_only
+ANTI_LEAKAGE_SCOPE = "src_ip_only"  # all_ips or src_ip_only
 
 # ============================================================================
 # TRAINING SETTINGS
 # ============================================================================
-EPOCHS = 100
+EPOCHS = 50
 BATCH_SIZE = 1024
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 0.0001

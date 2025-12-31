@@ -4,7 +4,7 @@
 INPUT_DIR = "dataset-raw"
 OUTPUT_DIR = "dataset-processed"
 
-# Files to use
+# Files to use (flow)
 FILES_TO_USE = [
     "Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv",
     "Thursday-15-02-2018_TrafficForML_CICFlowMeter.csv",

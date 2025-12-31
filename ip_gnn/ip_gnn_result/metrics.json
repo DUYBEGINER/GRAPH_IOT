@@ -1,0 +1,16 @@
+{
+  "accuracy": 0.9999188728030232,
+  "precision": 0.999729649590986,
+  "recall": 1.0,
+  "f1": 0.9998648065206868,
+  "true_positive": 114635,
+  "true_negative": 267450,
+  "false_positive": 31,
+  "false_negative": 0,
+  "far": 0.00011589608233855862,
+  "detection_rate": 1.0,
+  "auc": 0.9999551370003851,
+  "average_precision": 0.999790683679432,
+  "latency_seconds": 1.7131081461428493e-05,
+  "latency_ms": 0.017131081461428492
+}
