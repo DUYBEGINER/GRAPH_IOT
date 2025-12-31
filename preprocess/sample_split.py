@@ -17,7 +17,7 @@ import config as cfg
 
 
 def process_flow_gnn(cleaned_dir=None, output_dir=None):
-    """Processing for Flow-GNN (no IP columns)"""
+    """Processing for Flow-GNN"""
     print("\n" + "="*60)
     print("PROCESSING FLOW-GNN")
     print("="*60)
@@ -80,9 +80,40 @@ def process_flow_gnn(cleaned_dir=None, output_dir=None):
         random_state=cfg.SEED
     )
     
-    print(f"Train: {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"Train (before undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
+    
+    # Undersample training set to achieve target attack ratio
+    idx_train_benign = idx_train[y[idx_train] == 0]
+    idx_train_attack = idx_train[y[idx_train] == 1]
+    
+    n_attack = len(idx_train_attack)
+    n_benign_target = int(n_attack * (1 - cfg.TARGET_ATTACK_RATIO) / cfg.TARGET_ATTACK_RATIO)
+    
+    if n_benign_target < len(idx_train_benign):
+        print(f"\nUndersampling benign samples in training set...")
+        print(f"  Target attack ratio: {cfg.TARGET_ATTACK_RATIO:.1%}")
+        print(f"  Attack samples: {n_attack:,}")
+        print(f"  Benign samples needed: {n_benign_target:,} (from {len(idx_train_benign):,})")
+        
+        np.random.seed(cfg.SEED)
+        idx_train_benign_sampled = np.random.choice(idx_train_benign, n_benign_target, replace=False)
+        idx_train = np.concatenate([idx_train_benign_sampled, idx_train_attack])
+        np.random.shuffle(idx_train)
+    else:
+        print(f"\nWarning: Not enough benign samples to achieve target ratio")
+        print(f"  Current attack ratio: {n_attack / len(idx_train):.1%}")
+    
+    print(f"\nTrain (after undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
     print(f"Val:   {len(idx_val):,} ({len(idx_val)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_val] == 0).sum():,} ({(y[idx_val] == 0).sum() / len(idx_val) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_val] == 1).sum():,} ({(y[idx_val] == 1).sum() / len(idx_val) * 100:.1f}%)")
     print(f"Test:  {len(idx_test):,} ({len(idx_test)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_test] == 0).sum():,} ({(y[idx_test] == 0).sum() / len(idx_test) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_test] == 1).sum():,} ({(y[idx_test] == 1).sum() / len(idx_test) * 100:.1f}%)")
     
     # Scale features
     print("\nScaling features...")
@@ -112,9 +143,17 @@ def process_flow_gnn(cleaned_dir=None, output_dir=None):
         "test_size": len(idx_test),
         "benign": int((y == 0).sum()),
         "attack": int((y == 1).sum()),
+        "train_benign": int((y[idx_train] == 0).sum()),
+        "train_attack": int((y[idx_train] == 1).sum()),
+        "train_attack_ratio": float((y[idx_train] == 1).sum() / len(idx_train)),
+        "val_benign": int((y[idx_val] == 0).sum()),
+        "val_attack": int((y[idx_val] == 1).sum()),
+        "test_benign": int((y[idx_test] == 0).sum()),
+        "test_attack": int((y[idx_test] == 1).sum()),
         "files_used": cfg.FILES_TO_USE,
         "files_skipped": cfg.FILES_TO_SKIP,
         "sample_size": cfg.SAMPLE_SIZE,
+        "target_attack_ratio": cfg.TARGET_ATTACK_RATIO,
         "seed": cfg.SEED
     }
     
@@ -125,7 +164,7 @@ def process_flow_gnn(cleaned_dir=None, output_dir=None):
 
 
 def process_ip_gnn(cleaned_dir=None, output_dir=None):
-    """Processing for IP-GNN (keep IP columns)"""
+    """Processing for IP-GNN"""
     print("\n" + "="*60)
     print("PROCESSING IP-GNN")
     print("="*60)
@@ -190,9 +229,40 @@ def process_ip_gnn(cleaned_dir=None, output_dir=None):
         random_state=cfg.SEED
     )
     
-    print(f"Train: {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"Train (before undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
+    
+    # Undersample training set to achieve target attack ratio
+    idx_train_benign = idx_train[y[idx_train] == 0]
+    idx_train_attack = idx_train[y[idx_train] == 1]
+    
+    n_attack = len(idx_train_attack)
+    n_benign_target = int(n_attack * (1 - cfg.TARGET_ATTACK_RATIO) / cfg.TARGET_ATTACK_RATIO)
+    
+    if n_benign_target < len(idx_train_benign):
+        print(f"\nUndersampling benign samples in training set...")
+        print(f"  Target attack ratio: {cfg.TARGET_ATTACK_RATIO:.1%}")
+        print(f"  Attack samples: {n_attack:,}")
+        print(f"  Benign samples needed: {n_benign_target:,} (from {len(idx_train_benign):,})")
+        
+        np.random.seed(cfg.SEED)
+        idx_train_benign_sampled = np.random.choice(idx_train_benign, n_benign_target, replace=False)
+        idx_train = np.concatenate([idx_train_benign_sampled, idx_train_attack])
+        np.random.shuffle(idx_train)
+    else:
+        print(f"\nWarning: Not enough benign samples to achieve target ratio")
+        print(f"  Current attack ratio: {n_attack / len(idx_train):.1%}")
+    
+    print(f"\nTrain (after undersampling): {len(idx_train):,} ({len(idx_train)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_train] == 0).sum():,} ({(y[idx_train] == 0).sum() / len(idx_train) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_train] == 1).sum():,} ({(y[idx_train] == 1).sum() / len(idx_train) * 100:.1f}%)")
     print(f"Val:   {len(idx_val):,} ({len(idx_val)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_val] == 0).sum():,} ({(y[idx_val] == 0).sum() / len(idx_val) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_val] == 1).sum():,} ({(y[idx_val] == 1).sum() / len(idx_val) * 100:.1f}%)")
     print(f"Test:  {len(idx_test):,} ({len(idx_test)/len(y)*100:.1f}%)")
+    print(f"  Benign: {(y[idx_test] == 0).sum():,} ({(y[idx_test] == 0).sum() / len(idx_test) * 100:.1f}%)")
+    print(f"  Attack: {(y[idx_test] == 1).sum():,} ({(y[idx_test] == 1).sum() / len(idx_test) * 100:.1f}%)")
     
     # Scale features
     print("\nScaling features...")
@@ -229,9 +299,17 @@ def process_ip_gnn(cleaned_dir=None, output_dir=None):
         "test_size": len(idx_test),
         "benign": int((y == 0).sum()),
         "attack": int((y == 1).sum()),
+        "train_benign": int((y[idx_train] == 0).sum()),
+        "train_attack": int((y[idx_train] == 1).sum()),
+        "train_attack_ratio": float((y[idx_train] == 1).sum() / len(idx_train)),
+        "val_benign": int((y[idx_val] == 0).sum()),
+        "val_attack": int((y[idx_val] == 1).sum()),
+        "test_benign": int((y[idx_test] == 0).sum()),
+        "test_attack": int((y[idx_test] == 1).sum()),
         "file_used": cfg.IP_GNN_FILE,
         "ip_columns": ip_cols,
         "sample_size": cfg.SAMPLE_SIZE,
+        "target_attack_ratio": cfg.TARGET_ATTACK_RATIO,
         "seed": cfg.SEED,
         "note": "IP columns preserved for graph building"
     }

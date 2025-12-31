@@ -5,13 +5,6 @@ import config as cfg
 
 
 def clean_all(input_dir=None, output_dir=None, mode="flow_gnn"):
-    """Clean CSV files
-    
-    Args:
-        mode: "flow_gnn" or "ip_gnn"
-            - flow_gnn: process all files, drop IP columns
-            - ip_gnn: process only IP_GNN_FILE, keep IP columns
-    """
     input_path = Path(input_dir or cfg.INPUT_DIR)
     output_path = Path(output_dir or cfg.OUTPUT_DIR)
     
@@ -28,10 +21,10 @@ def clean_all(input_dir=None, output_dir=None, mode="flow_gnn"):
     # Select files based on mode
     if mode == "ip_gnn":
         csv_files = [input_path / cfg.IP_GNN_FILE]
-        print(f"\nCleaning for IP-GNN (keeping IP columns):")
+        print(f"\nCleaning for IP-GNN:")
     else:
         csv_files = [input_path / fname for fname in cfg.FILES_TO_USE]
-        print(f"\nCleaning for Flow-GNN (dropping IP columns):")
+        print(f"\nCleaning for Flow-GNN:")
     
     # Verify files exist
     missing = [f for f in csv_files if not f.exists()]
@@ -71,6 +64,13 @@ def clean_chunk(chunk, mode="flow_gnn"):
     # Handle label
     label_col = find_label_column(df)
     if label_col:
+        # Drop rows where label is "Label"
+        mask = df[label_col].astype(str).str.strip().str.lower() == "label"
+        df = df[~mask].reset_index(drop=True)
+        
+        if len(df) == 0:
+            return None
+        
         df["Label"] = create_binary_label(df[label_col])
         if label_col != "Label":
             df = df.drop(columns=[label_col])
@@ -117,7 +117,7 @@ def clean_chunk(chunk, mode="flow_gnn"):
     for col in numeric_cols:
         q_low = df[col].quantile(cfg.CLIP_QUANTILES[0])
         q_high = df[col].quantile(cfg.CLIP_QUANTILES[1])
-        df[col] = df[col].clip(q_low, q_high)
+        df[col] = df[col].clip(q_low, q_high).infer_objects(copy=False)
     
     # Reorder columns
     if mode == "ip_gnn":
