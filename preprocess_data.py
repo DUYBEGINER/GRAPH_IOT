@@ -171,6 +171,10 @@ class CICIDS2018Preprocessor:
             'Src IP',         # Chỉ có trong 1 file, không cần cho GNN
             'Dst IP',         # Chỉ có trong 1 file, không cần cho GNN
             'Src Port',       # Chỉ có trong 1 file
+            'Bwd PSH Flags',
+            'Bwd URG Flags',
+            'Fwd URG Flags',
+            'CWE Flag Count',
         ]
         existing_cols_to_drop = [col for col in columns_to_drop if col in data.columns]
         if existing_cols_to_drop:
