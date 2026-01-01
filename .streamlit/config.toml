@@ -1,0 +1,14 @@
+[server]
+# Increase file upload limit to 400MB
+maxUploadSize = 400
+
+# Increase message size for large data transfers
+maxMessageSize = 400
+
+# Enable CORS for better compatibility
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+# Disable server address gathering for faster startup
+gatherUsageStats = false
