@@ -1,7 +1,7 @@
 """
-Data Preprocessing for IP-based GNN (GraphSAGE)
+Data Preprocessing for E-GraphSAGE (Edge Classification)
 Dataset: CICIDS2018 - Only Thuesday-20-02-2018 file (contains IP info)
-Binary Classification: Benign vs Attack
+Binary Classification: Benign Flow vs Attack Flow
 Optimized for Kaggle Notebook
 """
 
@@ -21,12 +21,14 @@ TARGET_FILE = "Thuesday-20-02-2018_TrafficForML_CICFlowMeter.csv"
 SAMPLE_SIZE = None
 RANDOM_STATE = 42
 
-# Columns to keep for graph building
-IP_COLS = ['Src IP', 'Dst IP']
+# Columns for graph building
+SRC_IP_COL = "Src IP"
+DST_IP_COL = "Dst IP"
+LABEL_COL = "Label"
 
 # Columns to drop (not useful for features)
 COLS_TO_DROP = [
-    'Timestamp', 'Flow ID', 'Src Port',
+    'Timestamp', 'Flow ID', 'Src Port', 'Dst Port',
     'Bwd PSH Flags', 'Bwd URG Flags', 'Fwd URG Flags', 'CWE Flag Count'
 ]
 
@@ -59,7 +61,7 @@ def clean_data(data):
     initial_rows = len(data)
 
     # Keep IP columns separately
-    ip_data = data[IP_COLS].copy()
+    ip_data = data[[SRC_IP_COL, DST_IP_COL]].copy()
 
     # Drop unnecessary columns (except IP which we need for graph)
     drops = [c for c in COLS_TO_DROP if c in data.columns]
@@ -67,7 +69,7 @@ def clean_data(data):
     print(f"  Dropped: {drops}")
 
     # Convert to numeric (except Label and IP)
-    non_numeric = ['Label', 'Src IP', 'Dst IP']
+    non_numeric = [LABEL_COL, SRC_IP_COL, DST_IP_COL]
     for col in data.columns:
         if col not in non_numeric:
             data[col] = pd.to_numeric(data[col], errors='coerce')
@@ -89,7 +91,7 @@ def clean_data(data):
 def create_labels(data):
     """Create binary labels: 0 = Benign, 1 = Attack."""
     print("\nCreating binary labels...")
-    data['binary_label'] = (data['Label'] != 'Benign').astype(int)
+    data['binary_label'] = (data[LABEL_COL] != 'Benign').astype(int)
 
     benign = (data['binary_label'] == 0).sum()
     attack = (data['binary_label'] == 1).sum()
@@ -104,14 +106,14 @@ def create_ip_mapping(ip_data):
     print("\nCreating IP mapping...")
 
     # Get unique IPs
-    all_ips = pd.concat([ip_data['Src IP'], ip_data['Dst IP']]).unique()
+    all_ips = pd.concat([ip_data[SRC_IP_COL], ip_data[DST_IP_COL]]).unique()
 
     # Create mapping
     ip_encoder = LabelEncoder()
     ip_encoder.fit(all_ips)
 
-    src_idx = ip_encoder.transform(ip_data['Src IP'].values)
-    dst_idx = ip_encoder.transform(ip_data['Dst IP'].values)
+    src_idx = ip_encoder.transform(ip_data[SRC_IP_COL].values)
+    dst_idx = ip_encoder.transform(ip_data[DST_IP_COL].values)
 
     print(f"  Unique IPs: {len(all_ips):,}")
 
@@ -123,7 +125,7 @@ def extract_and_normalize(data):
     print("\nExtracting and normalizing features...")
 
     # Get feature columns (exclude labels and IPs)
-    exclude = ['Label', 'binary_label', 'Src IP', 'Dst IP']
+    exclude = [LABEL_COL, 'binary_label', SRC_IP_COL, DST_IP_COL]
     feature_cols = [c for c in data.columns if c not in exclude]
     feature_cols = [c for c in feature_cols if data[c].dtype in [np.float64, np.int64, np.float32, np.int32]]
 
@@ -178,7 +180,7 @@ def save_data(X, y, feature_cols, scaler, src_idx, dst_idx, ip_encoder):
 def main():
     """Main preprocessing pipeline."""
     print("=" * 60)
-    print("CICIDS2018 Preprocessing (IP-based)")
+    print("CICIDS2018 Preprocessing (E-GraphSAGE)")
     print("=" * 60)
 
     data = load_data()
@@ -200,9 +202,11 @@ def main():
 
     print("\n" + "=" * 60)
     print("PREPROCESSING COMPLETED")
-    print(f"Samples: {metadata['n_samples']:,}")
-    print(f"Features: {metadata['n_features']}")
-    print(f"Unique IPs: {metadata['n_ips']:,}")
+    print(f"Flows (edges):  {metadata['n_samples']:,}")
+    print(f"Features:       {metadata['n_features']}")
+    print(f"Unique IPs:     {metadata['n_ips']:,}")
+    print(f"Benign flows:   {metadata['n_benign']:,}")
+    print(f"Attack flows:   {metadata['n_attack']:,}")
     print("=" * 60)
 
     return X, y, src_idx, dst_idx
