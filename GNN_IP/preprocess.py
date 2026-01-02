@@ -24,11 +24,14 @@ RANDOM_STATE = 42
 # Columns for graph building
 SRC_IP_COL = "Src IP"
 DST_IP_COL = "Dst IP"
+SRC_PORT_COL = "Src Port"
+DST_PORT_COL = "Dst Port"
 LABEL_COL = "Label"
 
 # Columns to drop (not useful for features)
+# Note: Src Port and Dst Port are kept for node definition (IP:Port)
 COLS_TO_DROP = [
-    'Timestamp', 'Flow ID', 'Src Port', 'Dst Port',
+    'Timestamp', 'Flow ID',
     'Bwd PSH Flags', 'Bwd URG Flags', 'Fwd URG Flags', 'CWE Flag Count'
 ]
 
@@ -60,16 +63,16 @@ def clean_data(data):
     print("\nCleaning data...")
     initial_rows = len(data)
 
-    # Keep IP columns separately
-    ip_data = data[[SRC_IP_COL, DST_IP_COL]].copy()
+    # Keep IP and Port columns separately for node definition (IP:Port)
+    endpoint_data = data[[SRC_IP_COL, DST_IP_COL, SRC_PORT_COL, DST_PORT_COL]].copy()
 
-    # Drop unnecessary columns (except IP which we need for graph)
+    # Drop unnecessary columns (except IP and Port which we need for graph)
     drops = [c for c in COLS_TO_DROP if c in data.columns]
     data = data.drop(columns=drops)
     print(f"  Dropped: {drops}")
 
-    # Convert to numeric (except Label and IP)
-    non_numeric = [LABEL_COL, SRC_IP_COL, DST_IP_COL]
+    # Convert to numeric (except Label, IP, and Port)
+    non_numeric = [LABEL_COL, SRC_IP_COL, DST_IP_COL, SRC_PORT_COL, DST_PORT_COL]
     for col in data.columns:
         if col not in non_numeric:
             data[col] = pd.to_numeric(data[col], errors='coerce')
@@ -85,7 +88,7 @@ def clean_data(data):
     gc.collect()
     print(f"  Rows: {initial_rows:,} -> {len(data):,}")
 
-    return data, ip_data.loc[data.index]
+    return data, endpoint_data.loc[data.index]
 
 
 def create_labels(data):
@@ -101,31 +104,39 @@ def create_labels(data):
     return data
 
 
-def create_ip_mapping(ip_data):
-    """Create IP to index mapping for graph construction."""
-    print("\nCreating IP mapping...")
+def create_ip_mapping(endpoint_data):
+    """Create IP:Port to index mapping for graph construction.
+    
+    Nodes are defined as IP:Port endpoints, not just IP addresses.
+    This provides finer granularity for network flow analysis.
+    """
+    print("\nCreating IP:Port endpoint mapping...")
 
-    # Get unique IPs
-    all_ips = pd.concat([ip_data[SRC_IP_COL], ip_data[DST_IP_COL]]).unique()
+    # Create IP:Port strings for source and destination endpoints
+    src_endpoints = endpoint_data[SRC_IP_COL].astype(str) + ":" + endpoint_data[SRC_PORT_COL].astype(str)
+    dst_endpoints = endpoint_data[DST_IP_COL].astype(str) + ":" + endpoint_data[DST_PORT_COL].astype(str)
+
+    # Get unique endpoints (IP:Port)
+    all_endpoints = pd.concat([src_endpoints, dst_endpoints]).unique()
 
     # Create mapping
-    ip_encoder = LabelEncoder()
-    ip_encoder.fit(all_ips)
+    endpoint_encoder = LabelEncoder()
+    endpoint_encoder.fit(all_endpoints)
 
-    src_idx = ip_encoder.transform(ip_data[SRC_IP_COL].values)
-    dst_idx = ip_encoder.transform(ip_data[DST_IP_COL].values)
+    src_idx = endpoint_encoder.transform(src_endpoints.values)
+    dst_idx = endpoint_encoder.transform(dst_endpoints.values)
 
-    print(f"  Unique IPs: {len(all_ips):,}")
+    print(f"  Unique endpoints (IP:Port): {len(all_endpoints):,}")
 
-    return src_idx, dst_idx, ip_encoder
+    return src_idx, dst_idx, endpoint_encoder
 
 
 def extract_and_normalize(data):
     """Extract features and normalize."""
     print("\nExtracting and normalizing features...")
 
-    # Get feature columns (exclude labels and IPs)
-    exclude = [LABEL_COL, 'binary_label', SRC_IP_COL, DST_IP_COL]
+    # Get feature columns (exclude labels, IPs, and Ports - Ports are used for node definition)
+    exclude = [LABEL_COL, 'binary_label', SRC_IP_COL, DST_IP_COL, SRC_PORT_COL, DST_PORT_COL]
     feature_cols = [c for c in data.columns if c not in exclude]
     feature_cols = [c for c in feature_cols if data[c].dtype in [np.float64, np.int64, np.float32, np.int32]]
 

@@ -42,16 +42,19 @@ TARGET_FILE = "Thuesday-20-02-2018_TrafficForML_CICFlowMeter.csv"
 # Column names
 SRC_IP_COL = "Src IP"
 DST_IP_COL = "Dst IP"
+SRC_PORT_COL = "Src Port"
+DST_PORT_COL = "Dst Port"
 LABEL_COL = "Label"
 
 # Preprocessing
 SAMPLE_SIZE = None
-COLS_TO_DROP = ['Timestamp', 'Flow ID', 'Src Port', 'Dst Port',
+# Note: Src Port and Dst Port are kept for node definition (IP:Port)
+COLS_TO_DROP = ['Timestamp', 'Flow ID',
                 'Bwd PSH Flags', 'Bwd URG Flags', 'Fwd URG Flags', 'CWE Flag Count']
 
-# Anti-leakage
+# Anti-leakage (applied to endpoints = IP:Port)
 ANTI_LEAKAGE_ENABLED = True
-ANTI_LEAKAGE_SCOPE = "src_ip_only"
+ANTI_LEAKAGE_SCOPE = "src_endpoint_only"  # all_endpoints or src_endpoint_only
 
 # Model
 HIDDEN_DIM = 128
@@ -97,15 +100,15 @@ def preprocess_data():
         df = df.sample(n=SAMPLE_SIZE, random_state=RANDOM_STATE)
         gc.collect()
 
-    # Keep IP data
-    ip_data = df[[SRC_IP_COL, DST_IP_COL]].copy()
+    # Keep IP and Port data for endpoint (IP:Port) definition
+    endpoint_data = df[[SRC_IP_COL, DST_IP_COL, SRC_PORT_COL, DST_PORT_COL]].copy()
 
     # Drop columns
     drops = [c for c in COLS_TO_DROP if c in df.columns]
     df = df.drop(columns=drops)
 
-    # Convert to numeric
-    non_numeric = [LABEL_COL, SRC_IP_COL, DST_IP_COL]
+    # Convert to numeric (exclude label, IP, and Port columns)
+    non_numeric = [LABEL_COL, SRC_IP_COL, DST_IP_COL, SRC_PORT_COL, DST_PORT_COL]
     for col in df.columns:
         if col not in non_numeric:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -121,8 +124,8 @@ def preprocess_data():
     print(f"Benign flows: {benign:,} ({benign/len(df)*100:.1f}%)")
     print(f"Attack flows: {attack:,} ({attack/len(df)*100:.1f}%)")
 
-    # Extract features
-    exclude = [LABEL_COL, 'binary_label', SRC_IP_COL, DST_IP_COL]
+    # Extract features (exclude Port columns from features - they are used for node definition)
+    exclude = [LABEL_COL, 'binary_label', SRC_IP_COL, DST_IP_COL, SRC_PORT_COL, DST_PORT_COL]
     feature_cols = [c for c in df.columns if c not in exclude]
     feature_cols = [c for c in feature_cols if df[c].dtype in [np.float64, np.int64, np.float32, np.int32]]
     variances = df[feature_cols].var()
@@ -134,50 +137,55 @@ def preprocess_data():
     X = scaler.fit_transform(df[feature_cols])
     y = df['binary_label'].values
 
-    # Create IP indices
-    all_ips = pd.concat([ip_data[SRC_IP_COL], ip_data[DST_IP_COL]]).unique()
-    ip_encoder = LabelEncoder()
-    ip_encoder.fit(all_ips)
+    # Create endpoint (IP:Port) indices - nodes are IP:Port pairs
+    src_endpoints = endpoint_data[SRC_IP_COL].astype(str) + ":" + endpoint_data[SRC_PORT_COL].astype(str)
+    dst_endpoints = endpoint_data[DST_IP_COL].astype(str) + ":" + endpoint_data[DST_PORT_COL].astype(str)
+    
+    all_endpoints = pd.concat([src_endpoints, dst_endpoints]).unique()
+    endpoint_encoder = LabelEncoder()
+    endpoint_encoder.fit(all_endpoints)
 
-    src_idx = ip_encoder.transform(ip_data[SRC_IP_COL].values)
-    dst_idx = ip_encoder.transform(ip_data[DST_IP_COL].values)
+    src_idx = endpoint_encoder.transform(src_endpoints.values)
+    dst_idx = endpoint_encoder.transform(dst_endpoints.values)
 
-    print(f"Unique IPs: {len(all_ips):,}")
+    print(f"Unique endpoints (IP:Port): {len(all_endpoints):,}")
 
-    del df, ip_data
+    del df, endpoint_data
     gc.collect()
 
     return X, y, src_idx, dst_idx, feature_cols, scaler
 
 # ============================================================================
 # 2. GRAPH CONSTRUCTION (Endpoint-based for E-GraphSAGE)
+# Nodes are defined as IP:Port pairs for finer granularity
 # ============================================================================
 def build_endpoint_graph(X, y, src_idx, dst_idx):
     print("\n" + "=" * 60)
     print("STEP 2: GRAPH CONSTRUCTION (E-GraphSAGE)")
+    print("Nodes: IP:Port endpoints")
     print("=" * 60)
     print(f"Anti-leakage: {ANTI_LEAKAGE_ENABLED} ({ANTI_LEAKAGE_SCOPE})")
 
-    # Apply anti-leakage IP mapping if enabled
+    # Apply anti-leakage endpoint mapping if enabled
     if ANTI_LEAKAGE_ENABLED:
-        if ANTI_LEAKAGE_SCOPE == "all_ips":
-            unique_ips = np.unique(np.concatenate([src_idx, dst_idx]))
-        else:  # src_ip_only
-            unique_ips = np.unique(src_idx)
+        if ANTI_LEAKAGE_SCOPE == "all_endpoints":
+            unique_endpoints = np.unique(np.concatenate([src_idx, dst_idx]))
+        else:  # src_endpoint_only
+            unique_endpoints = np.unique(src_idx)
         
-        ip_map = {old: new for new, old in enumerate(unique_ips)}
+        endpoint_map = {old: new for new, old in enumerate(unique_endpoints)}
         
-        new_src_idx = np.array([ip_map.get(i, i) for i in src_idx])
-        if ANTI_LEAKAGE_SCOPE == "all_ips":
-            new_dst_idx = np.array([ip_map.get(i, i) for i in dst_idx])
+        new_src_idx = np.array([endpoint_map.get(i, i) for i in src_idx])
+        if ANTI_LEAKAGE_SCOPE == "all_endpoints":
+            new_dst_idx = np.array([endpoint_map.get(i, i) for i in dst_idx])
         else:
-            max_idx = len(unique_ips)
+            max_idx = len(unique_endpoints)
             dst_unique = np.unique(dst_idx)
-            for dst_ip in dst_unique:
-                if dst_ip not in ip_map:
-                    ip_map[dst_ip] = max_idx
+            for dst_ep in dst_unique:
+                if dst_ep not in endpoint_map:
+                    endpoint_map[dst_ep] = max_idx
                     max_idx += 1
-            new_dst_idx = np.array([ip_map[i] for i in dst_idx])
+            new_dst_idx = np.array([endpoint_map[i] for i in dst_idx])
         
         src_idx = new_src_idx
         dst_idx = new_dst_idx
@@ -221,12 +229,12 @@ def build_endpoint_graph(X, y, src_idx, dst_idx):
     benign = (edge_y == 0).sum().item()
     attack = (edge_y == 1).sum().item()
     
-    print(f"Nodes (endpoints): {num_nodes:,}")
-    print(f"Edges (flows):     {num_edges:,}")
-    print(f"Edge features:     {n_features}")
-    print(f"Benign edges:      {benign:,} ({benign/num_edges*100:.1f}%)")
-    print(f"Attack edges:      {attack:,} ({attack/num_edges*100:.1f}%)")
-    print(f"Train/Val/Test:    {len(train_idx):,}/{len(val_idx):,}/{len(test_idx):,}")
+    print(f"Nodes (IP:Port endpoints): {num_nodes:,}")
+    print(f"Edges (flows):             {num_edges:,}")
+    print(f"Edge features:             {n_features}")
+    print(f"Benign edges:              {benign:,} ({benign/num_edges*100:.1f}%)")
+    print(f"Attack edges:              {attack:,} ({attack/num_edges*100:.1f}%)")
+    print(f"Train/Val/Test:            {len(train_idx):,}/{len(val_idx):,}/{len(test_idx):,}")
 
     data = Data(
         x=node_x,
@@ -243,7 +251,12 @@ def build_endpoint_graph(X, y, src_idx, dst_idx):
 # 3. MODEL: E-GraphSAGE for Edge Classification
 # ============================================================================
 class EdgeFeatureSAGEConv(nn.Module):
-    """SAGEConv layer that incorporates edge features during aggregation."""
+    """SAGEConv layer that incorporates edge features during aggregation.
+    
+    Following Eq. 2 of E-GraphSAGE paper:
+    h_v^k = σ(W_k · CONCAT(h_v^{k-1}, AGG({h_e : e ∈ N(v)})))
+    Uses concatenation instead of addition for combining self and neighbor info.
+    """
     
     def __init__(self, in_dim, out_dim, in_edge_dim, aggr="mean"):
         super().__init__()
@@ -252,18 +265,24 @@ class EdgeFeatureSAGEConv(nn.Module):
         self.in_edge_dim = in_edge_dim
         self.aggr = aggr
         
+        # Transform self node features
         self.lin_self = nn.Linear(in_dim, out_dim, bias=False)
+        # Transform aggregated neighbor edge features
         self.lin_neigh = nn.Linear(out_dim, out_dim, bias=False)
+        # Transform edge features
         self.lin_edge = nn.Linear(in_edge_dim, out_dim, bias=False)
-        self.bias = nn.Parameter(torch.zeros(out_dim))
+        # Final linear layer after concatenation (W_k in paper)
+        self.lin_final = nn.Linear(2 * out_dim, out_dim, bias=True)
         
     def forward(self, x, edge_index, edge_attr):
         src, dst = edge_index
         num_nodes = x.size(0)
         
+        # Transform self node features
         out_self = self.lin_self(x)
-        edge_projected = self.lin_edge(edge_attr)
         
+        # Transform and aggregate edge features from neighbors
+        edge_projected = self.lin_edge(edge_attr)
         aggregated = torch.zeros(num_nodes, self.out_dim, device=x.device)
         
         if self.aggr == "mean":
@@ -278,7 +297,12 @@ class EdgeFeatureSAGEConv(nn.Module):
             aggregated.scatter_add_(0, dst.unsqueeze(1).expand_as(edge_projected), edge_projected)
         
         out_neigh = self.lin_neigh(aggregated)
-        out = out_self + out_neigh + self.bias
+        
+        # Concatenate self and neighbor features (following paper's Eq. 2)
+        h_combined = torch.cat([out_self, out_neigh], dim=1)
+        
+        # Apply final linear transformation (W_k in paper)
+        out = self.lin_final(h_combined)
         
         return out
 

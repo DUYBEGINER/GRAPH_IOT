@@ -59,18 +59,24 @@ class EdgeFeatureSAGEConv(nn.Module):
         self.in_edge_dim = in_edge_dim
         self.aggr = aggr
         
+        # Transform self node features
         self.lin_self = nn.Linear(in_dim, out_dim, bias=False)
+        # Transform aggregated neighbor edge features
         self.lin_neigh = nn.Linear(out_dim, out_dim, bias=False)
+        # Transform edge features
         self.lin_edge = nn.Linear(in_edge_dim, out_dim, bias=False)
-        self.bias = nn.Parameter(torch.zeros(out_dim))
+        # Final linear layer after concatenation (W_k in paper)
+        self.lin_final = nn.Linear(2 * out_dim, out_dim, bias=True)
         
     def forward(self, x, edge_index, edge_attr):
         src, dst = edge_index
         num_nodes = x.size(0)
         
+        # Transform self node features
         out_self = self.lin_self(x)
-        edge_projected = self.lin_edge(edge_attr)
         
+        # Transform and aggregate edge features from neighbors
+        edge_projected = self.lin_edge(edge_attr)
         aggregated = torch.zeros(num_nodes, self.out_dim, device=x.device)
         
         if self.aggr == "mean":
@@ -85,7 +91,12 @@ class EdgeFeatureSAGEConv(nn.Module):
             aggregated.scatter_add_(0, dst.unsqueeze(1).expand_as(edge_projected), edge_projected)
         
         out_neigh = self.lin_neigh(aggregated)
-        out = out_self + out_neigh + self.bias
+        
+        # Concatenate self and neighbor features (following paper's Eq. 2)
+        h_combined = torch.cat([out_self, out_neigh], dim=1)
+        
+        # Apply final linear transformation (W_k in paper)
+        out = self.lin_final(h_combined)
         
         return out
 

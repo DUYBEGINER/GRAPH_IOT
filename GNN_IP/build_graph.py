@@ -1,9 +1,12 @@
 """
 Graph Construction for E-GraphSAGE (Edge Classification)
-Nodes: IP addresses (endpoints)
-Edges: Communication flows between IPs
+Nodes: IP:Port endpoints (source and destination)
+Edges: Communication flows between endpoints
 Edge Features: Flow features
 Edge Labels: Benign/Attack
+
+Node Definition: Each node represents a unique IP:Port combination,
+providing finer granularity than IP-only nodes.
 """
 
 import numpy as np
@@ -24,9 +27,9 @@ RANDOM_STATE = 42
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.15
 
-# Anti-leakage settings
+# Anti-leakage settings (applied to endpoints = IP:Port)
 ANTI_LEAKAGE_ENABLED = True
-ANTI_LEAKAGE_SCOPE = "src_ip_only"  # all_ips or src_ip_only
+ANTI_LEAKAGE_SCOPE = "src_endpoint_only"  # all_endpoints or src_endpoint_only
 
 
 def load_processed_data():
@@ -52,38 +55,39 @@ def build_endpoint_graph(X, y, src_idx, dst_idx):
     Build endpoint-based graph for E-GraphSAGE.
     
     Graph structure:
-    - Nodes: endpoints (IP addresses)
+    - Nodes: endpoints (IP:Port pairs for finer granularity)
     - Edges: flow records
     - Edge features: flow features
     - Edge labels: benign/attack
     """
     print("\nBuilding Endpoint Graph for E-GraphSAGE...")
+    print("Nodes: IP:Port endpoints")
     
     with tqdm(total=5, desc="Graph construction", ncols=100) as pbar:
-        # Step 1: Apply anti-leakage IP mapping if enabled
+        # Step 1: Apply anti-leakage endpoint mapping if enabled
         if ANTI_LEAKAGE_ENABLED:
             rng = np.random.RandomState(RANDOM_STATE)
             
-            if ANTI_LEAKAGE_SCOPE == "all_ips":
-                unique_ips = np.unique(np.concatenate([src_idx, dst_idx]))
-            else:  # src_ip_only
-                unique_ips = np.unique(src_idx)
+            if ANTI_LEAKAGE_SCOPE == "all_endpoints":
+                unique_endpoints = np.unique(np.concatenate([src_idx, dst_idx]))
+            else:  # src_endpoint_only
+                unique_endpoints = np.unique(src_idx)
             
-            ip_map = {old: new for new, old in enumerate(unique_ips)}
+            endpoint_map = {old: new for new, old in enumerate(unique_endpoints)}
             
             # Remap indices
-            new_src_idx = np.array([ip_map.get(i, i) for i in src_idx])
-            if ANTI_LEAKAGE_SCOPE == "all_ips":
-                new_dst_idx = np.array([ip_map.get(i, i) for i in dst_idx])
+            new_src_idx = np.array([endpoint_map.get(i, i) for i in src_idx])
+            if ANTI_LEAKAGE_SCOPE == "all_endpoints":
+                new_dst_idx = np.array([endpoint_map.get(i, i) for i in dst_idx])
             else:
-                # For dst, we need to create new indices for IPs not in src
-                max_idx = len(unique_ips)
+                # For dst, we need to create new indices for endpoints not in src
+                max_idx = len(unique_endpoints)
                 dst_unique = np.unique(dst_idx)
-                for dst_ip in dst_unique:
-                    if dst_ip not in ip_map:
-                        ip_map[dst_ip] = max_idx
+                for dst_ep in dst_unique:
+                    if dst_ep not in endpoint_map:
+                        endpoint_map[dst_ep] = max_idx
                         max_idx += 1
-                new_dst_idx = np.array([ip_map[i] for i in dst_idx])
+                new_dst_idx = np.array([endpoint_map[i] for i in dst_idx])
             
             src_idx = new_src_idx
             dst_idx = new_dst_idx
@@ -141,11 +145,11 @@ def build_endpoint_graph(X, y, src_idx, dst_idx):
     attack = (edge_y == 1).sum().item()
     
     print(f"\nEndpoint graph built:")
-    print(f"  Nodes (endpoints): {num_nodes:,}")
-    print(f"  Edges (flows):     {num_edges:,}")
-    print(f"  Edge features:     {num_edge_features}")
-    print(f"  Benign edges:      {benign:,} ({benign/num_edges*100:.1f}%)")
-    print(f"  Attack edges:      {attack:,} ({attack/num_edges*100:.1f}%)")
+    print(f"  Nodes (IP:Port endpoints): {num_nodes:,}")
+    print(f"  Edges (flows):             {num_edges:,}")
+    print(f"  Edge features:             {num_edge_features}")
+    print(f"  Benign edges:              {benign:,} ({benign/num_edges*100:.1f}%)")
+    print(f"  Attack edges:              {attack:,} ({attack/num_edges*100:.1f}%)")
     
     return data
 
@@ -218,6 +222,7 @@ def main():
     """Main graph building pipeline."""
     print("=" * 60)
     print("GRAPH CONSTRUCTION (E-GraphSAGE Edge Classification)")
+    print("Nodes: IP:Port endpoints")
     print("=" * 60)
     print(f"Anti-leakage: {ANTI_LEAKAGE_ENABLED} ({ANTI_LEAKAGE_SCOPE})")
     
@@ -237,11 +242,11 @@ def main():
     
     print("\n" + "=" * 60)
     print("GRAPH CONSTRUCTION COMPLETED")
-    print(f"Nodes (Endpoints): {graph_metadata['n_nodes']:,}")
-    print(f"Edges (Flows):     {graph_metadata['n_edges']:,}")
-    print(f"Edge Features:     {graph_metadata['n_edge_features']}")
-    print(f"Benign edges:      {graph_metadata['n_benign']:,}")
-    print(f"Attack edges:      {graph_metadata['n_attack']:,}")
+    print(f"Nodes (IP:Port endpoints): {graph_metadata['n_nodes']:,}")
+    print(f"Edges (Flows):             {graph_metadata['n_edges']:,}")
+    print(f"Edge Features:             {graph_metadata['n_edge_features']}")
+    print(f"Benign edges:              {graph_metadata['n_benign']:,}")
+    print(f"Attack edges:              {graph_metadata['n_attack']:,}")
     print("=" * 60)
     
     return data
